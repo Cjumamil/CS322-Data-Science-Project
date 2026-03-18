@@ -36,7 +36,7 @@ Focus on capturing decision and intent.
 **Reasoning:** High visibility + persists for future teams.  
 **Approved by:** Team consensus  
 
-## D-002  
+## D-002
 **Date:** 2026-03-16  
 **Topic:** Created Project Roadmap  
 **Decision:** Designed a project roadmap chart with various phases.  
@@ -52,7 +52,7 @@ Focus on capturing decision and intent.
 
 ## D-004
 **Date:** 2026-03-18  
-**Topic:** Task Board
-**Decision:** Created a task board in a google document that lists each other's roles and a checklist of tasks to get done
-**Reasoning:** Keep track of relevant project tasks, updates, and info.
-**Approved by:** Joshua
+**Topic:** Task Board  
+**Decision:** Created a task board in a google document that lists each other's roles and a checklist of tasks to get done  
+**Reasoning:** Keep track of relevant project tasks, updates, and info.  
+**Approved by:** Joshua  
