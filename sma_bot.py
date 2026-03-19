@@ -1,3 +1,4 @@
+import os
 import math
 import pandas as pd
 import yfinance as yf
@@ -6,7 +7,9 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 
-from alpaca_config import API_KEY, SECRET_KEY
+
+API_KEY = os.getenv("ALPACA_API_KEY")
+SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
 
 # ============================
@@ -33,6 +36,10 @@ FORCE_DIRECTION = "SELL"
 # ALPACA HELPERS
 # ============================
 def connect_alpaca() -> TradingClient:
+    if not API_KEY or not SECRET_KEY:
+        raise ValueError(
+            "Missing Alpaca credentials. Set ALPACA_API_KEY and ALPACA_SECRET_KEY as environment variables."
+        )
     return TradingClient(API_KEY, SECRET_KEY, paper=True)
 
 
@@ -225,7 +232,11 @@ def run():
     print(f"\nLatest close: {latest_close:.2f}")
     print(f"Latest crossover: {latest_cross}")
 
-    trading_client = connect_alpaca()
+    try:
+        trading_client = connect_alpaca()
+    except ValueError as e:
+        print(e)
+        return
 
     account = get_account(trading_client)
     if account is None:
