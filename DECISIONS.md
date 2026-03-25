@@ -56,3 +56,17 @@ Focus on capturing decision and intent.
 **Decision:** Created a task board in a google document that lists each other's roles and a checklist of tasks to get done  
 **Reasoning:** Keep track of relevant project tasks, updates, and info.  
 **Approved by:** Joshua  
+
+## D-005
+**Date:** 2026-03-24  
+**Topic:** Trading Implementation & Test Run
+**Decision:** Implement and test that the code works with the alpaca API and test it without using our current papertrade balance.  
+**Reasoning:** While we haven't completely figured out our trading bot algorithm yet, we want to at least be able to get the code working and connecting with the API so that once we do figure out the algorithm, we will be mostly set up.
+**Approved by:** Joshua, Havanna  
+
+## D-006
+**Date:** 2026-03-24  
+**Topic:** Initial Trading Philosophy
+**Decision:** Trade less often but enter setups with higher expected value signals in which we will risk more. Combine this strategy with lower expected value signal setups.
+**Reasoning:** This idea of this philosophy is to allow the bot to take advantage of scenarios where there is greater potential for gain, while also combine it with more often lower risk, lower value setups to ensure we have consistent effort by the bot. Our goal is not just for the bot to have high accuracy in its decision-making, but to make the most amount of money possible. 
+**Approved by:** Joshua, Havanna  
