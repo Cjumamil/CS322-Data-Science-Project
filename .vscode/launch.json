@@ -1,0 +1,12 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Trading Bot",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "trading_bot.main",
+      "console": "integratedTerminal"
+    }
+  ]
+}
