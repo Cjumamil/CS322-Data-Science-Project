@@ -13,10 +13,10 @@ Focus on capturing decision and intent.
 
 ## D-###  
 **Date:** YYYY-MM-DD  
-**Topic:** 
-**Decision:** 
-**Reasoning:** 
-**Approved by:** 
+**Topic:**  
+**Decision:**  
+**Reasoning:**  
+**Approved by:**  
 
 ## Example Template
 
@@ -24,7 +24,7 @@ Focus on capturing decision and intent.
 **Date:** 2026-02-26  
 **Topic:** Tracking method  
 **Decision:** Use IoU-based tracker for baseline.  
-**Reasoning:**  Lightweight implementation, minimal dependencies, sufficient for prototype. More advanced tracking (e.g., DeepSORT) can be explored later if needed.  
+**Reasoning:** Lightweight implementation, minimal dependencies, sufficient for prototype. More advanced tracking (e.g., DeepSORT) can be explored later if needed.  
 **Approved by:** Tom, Alyssa  
 
 ---
@@ -41,7 +41,7 @@ Focus on capturing decision and intent.
 **Topic:** Created Project Roadmap  
 **Decision:** Designed a project roadmap chart with various phases.  
 **Reasoning:** To have an organized overview of the project.  
-**Approved by:**  Joshua  
+**Approved by:** Joshua  
 
 ## D-003
 **Date:** 2026-03-17  
@@ -59,16 +59,16 @@ Focus on capturing decision and intent.
 
 ## D-005
 **Date:** 2026-03-24  
-**Topic:** Trading Implementation & Test Run
-**Decision:** Implement and test that the code works with the alpaca API and test it without using our current papertrade balance.  
-**Reasoning:** While we haven't completely figured out our trading bot algorithm yet, we want to at least be able to get the code working and connecting with the API so that once we do figure out the algorithm, we will be mostly set up.
+**Topic:** Trading Implementation & Test Run  
+**Decision:** Implement and test that the code works with the Alpaca API and test it without using our current paper trade balance.  
+**Reasoning:** While we haven't completely figured out our trading bot algorithm yet, we want to at least be able to get the code working and connecting with the API so that once we do figure out the algorithm, we will be mostly set up.  
 **Approved by:** Joshua, Havanna  
 
 ## D-006
 **Date:** 2026-03-24  
-**Topic:** Initial Trading Philosophy
-**Decision:** Trade less often but enter setups with higher expected value signals in which we will risk more. Combine this strategy with lower expected value signal setups.
-**Reasoning:** This idea of this philosophy is to allow the bot to take advantage of scenarios where there is greater potential for gain, while also combine it with more often lower risk, lower value setups to ensure we have consistent effort by the bot. Our goal is not just for the bot to have high accuracy in its decision-making, but to make the most amount of money possible. 
+**Topic:** Initial Trading Philosophy  
+**Decision:** Trade less often but enter setups with higher expected value signals in which we will risk more. Combine this strategy with lower expected value signal setups.  
+**Reasoning:** This idea of this philosophy is to allow the bot to take advantage of scenarios where there is greater potential for gain, while also combine it with more often lower risk, lower value setups to ensure we have consistent effort by the bot. Our goal is not just for the bot to have high accuracy in its decision-making, but to make the most amount of money possible.  
 **Approved by:** Joshua, Havanna  
 
 ## D-007  
@@ -103,7 +103,7 @@ Focus on capturing decision and intent.
 **Date:** 2026-03-27  
 **Topic:** Risk Management (Stop-Loss Implementation)  
 **Decision:** Implemented broker-side stop-loss orders placed after entry fills.  
-**Reasoning:** Previously, exit conditions were only evaluated within the bot’s polling loop, which could lead to delayed reactions. Adding a broker-side stop-loss ensures downside protection even if the bot is delayed or not actively checking conditions. This improves reliability and reduces risk exposure.  
+**Reasoning:** Previously, exit conditions were only evaluated within the bot's polling loop, which could lead to delayed reactions. Adding a broker-side stop-loss ensures downside protection even if the bot is delayed or not actively checking conditions. This improves reliability and reduces risk exposure.  
 **Approved by:** Joshua  
 
 ## D-012  
@@ -117,5 +117,61 @@ Focus on capturing decision and intent.
 **Date:** 2026-03-27  
 **Topic:** Strategy Direction (Context-Aware Trading)  
 **Decision:** Expand the trading strategy beyond isolated indicator signals to incorporate broader market context, including sector performance and overall market conditions.  
-**Reasoning:** Relying solely on technical indicators (e.g., SMA crossovers) can lead to weak or misleading signals when market conditions are unfavorable. Real traders often consider additional context such as whether the broader market is trending (e.g., S&P 500, Dow Jones) and how a stock performs relative to its sector or related ETFs. Incorporating this context can improve decision quality by filtering trades and aligning positions with stronger market trends. This approach aims to make the bot’s behavior more realistic and closer to actual trading practices, rather than purely indicator-driven.  
+**Reasoning:** Relying solely on technical indicators (e.g., SMA crossovers) can lead to weak or misleading signals when market conditions are unfavorable. Real traders often consider additional context such as whether the broader market is trending (e.g., S&P 500, Dow Jones) and how a stock performs relative to its sector or related ETFs. Incorporating this context can improve decision quality by filtering trades and aligning positions with stronger market trends. This approach aims to make the bot's behavior more realistic and closer to actual trading practices, rather than purely indicator-driven.  
+**Approved by:** Joshua  
+
+## D-014  
+**Date:** 2026-03-27  
+**Topic:** Broker/API as Source of Truth  
+**Decision:** Refactored the bot so that live Alpaca broker/account state is treated as the operational source of truth for positions, open orders, protective stops, and pending order state. Logs remain observational only and are no longer used as operational inputs.  
+**Reasoning:** Local session memory and prior logs can become stale after fills, cancellations, delays, or restarts. Using Alpaca as the source of truth makes the bot more reliable and reduces the chance of duplicate orders or incorrect assumptions about live positions and open orders. This also better reflects how real trading systems should treat broker state versus internal memory.  
+**Approved by:** Joshua  
+
+## D-015  
+**Date:** 2026-03-27  
+**Topic:** Logging Architecture Split  
+**Decision:** Keep `decision_log.csv` and `trade_log.csv` as stable, spreadsheet-friendly logs, and add `strategy_context_log.jsonl` as a flexible strategy-specific context log. Add a shared `decision_id` to link related log entries across the decision and trade lifecycle.  
+**Reasoning:** Core logs should stay readable and stable over time, while strategy-specific data will likely change as new strategies are added. JSONL provides a flexible structure for evolving strategy context without forcing rigid CSV schemas. A shared `decision_id` improves traceability by linking what the bot saw, what decision it made, and what trade or fill followed.  
+**Approved by:** Joshua  
+
+## D-016  
+**Date:** 2026-03-28  
+**Topic:** Decision Log Schema Simplification  
+**Decision:** Remove SMA-specific columns from `decision_log.csv` and move strategy-specific signal details into `strategy_context_log.jsonl`.  
+**Reasoning:** The decision log should remain generic and durable even as the bot changes strategies. Keeping SMA-only columns in the main decision log would make the schema less reusable for future RSI, multi-factor, or combined strategies. The strategy context log is a better location for indicator-specific values such as SMA fast/slow, signal, and crossover.  
+**Approved by:** Joshua  
+
+## D-017  
+**Date:** 2026-03-28  
+**Topic:** Runtime Refactor for Readability  
+**Decision:** Refactored the trading bot into additional focused modules, separating live broker state helpers, execution/order lifecycle handling, and strategy-context logging from the main runtime loop.  
+**Reasoning:** `main.py` had grown to include too many responsibilities, making it harder to understand the overall cycle flow. Splitting supporting logic into `state.py`, `execution.py`, and `decision_logging.py` makes the code easier to read, maintain, and extend while keeping the main loop focused on orchestration.  
+**Approved by:** Joshua  
+
+## D-018  
+**Date:** 2026-03-28  
+**Topic:** Strategy Plugin Architecture  
+**Decision:** Convert the existing SMA crossover logic into a real pluggable strategy module under `trading_bot/strategies/`, with a small shared strategy interface and `SmaCrossoverStrategy` as the first implementation.  
+**Reasoning:** The original design still treated SMA crossover as the implicit built-in strategy. Moving strategy behavior behind a shared interface allows the current SMA implementation to exist as one strategy among many, reducing coupling and making it much easier to add future strategies without rewriting the execution flow.  
+**Approved by:** Joshua  
+
+## D-019  
+**Date:** 2026-03-28  
+**Topic:** Config-Driven Bot Setup  
+**Decision:** Introduced a single TOML configuration file (`bot_config.toml`) to define global bot settings, execution settings, risk settings, and per-symbol strategy assignments. The initial config includes both `AAPL` and `ALB` using the SMA crossover strategy.  
+**Reasoning:** Hardcoding symbol, strategy, and runtime settings in Python made the bot harder to test and reconfigure. A config file makes the bot easier to use, easier to experiment with, and better prepared for running multiple symbols with different strategy assignments in the future. Starting with one config file keeps the system simple while still supporting growth later if the symbol list becomes large enough to justify splitting config files.  
+**Approved by:** Joshua  
+
+## D-020  
+**Date:** 2026-03-28  
+**Topic:** Bot Version Tracking  
+**Decision:** Added a lightweight bot-level version number in `bot_config.toml` and propagated it into runtime output and logs. The current bot version is `0.3.0`.  
+**Reasoning:** The bot's architecture, logging model, and configuration structure have changed significantly over time, which makes it useful to distinguish runs produced by different system versions. Recording `bot_version` alongside strategy version helps separate overall system changes from strategy-logic changes and makes archived logs easier to interpret later.  
+**Approved by:** Joshua  
+
+## D-021  
+**Date:** 2026-03-28  
+**Topic:** Legacy Log Archiving Convention  
+**Decision:** Archive historical `decision_log.csv` and `trade_log.csv` files into dated subfolders under `archive/`, using a naming convention such as `YYYY-MM-DD-bot-legacy` or `YYYY-MM-DD-bot-X.Y.Z`, and include a short `notes.txt` file when helpful.  
+**Reasoning:** As the bot's architecture and logging model evolve, old logs can become harder to interpret if they remain mixed with current runs. Moving prior logs into clearly named archive folders preserves the historical record, creates a clean boundary for new runs, and makes it easier to understand which bot generation produced a given set of files. A short note file adds context when a version boundary or architectural shift is not obvious from the archived CSVs alone.  
 **Approved by:** Joshua  

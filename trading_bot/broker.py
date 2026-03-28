@@ -5,8 +5,8 @@ import os
 import time
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.requests import GetOrderByIdRequest, MarketOrderRequest, StopOrderRequest
+from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
+from alpaca.trading.requests import GetOrderByIdRequest, GetOrdersRequest, MarketOrderRequest, StopOrderRequest
 
 load_dotenv()
 
@@ -26,14 +26,26 @@ FINAL_ORDER_STATUSES = {
 }
 
 
-def connect_alpaca() -> TradingClient:
-    """Create a paper-trading Alpaca client from environment variables."""
+def _serialize_enum(value) -> str:
+    """Convert Alpaca enum-like values into lower-case strings."""
+    if hasattr(value, "value"):
+        value = value.value
+    return str(value).lower()
+
+
+def _symbol_matches(order, symbol: str) -> bool:
+    """Return True when the order belongs to the requested symbol."""
+    return str(getattr(order, "symbol", "")).upper() == symbol.upper()
+
+
+def connect_alpaca(*, paper: bool = True) -> TradingClient:
+    """Create an Alpaca client from environment variables."""
     if not API_KEY or not SECRET_KEY:
         raise ValueError(
             "Missing Alpaca credentials. Make sure your .env file contains ALPACA_API_KEY and ALPACA_SECRET_KEY."
         )
 
-    return TradingClient(API_KEY, SECRET_KEY, paper=True)
+    return TradingClient(API_KEY, SECRET_KEY, paper=paper)
 
 
 def get_account(trading_client: TradingClient):
@@ -61,6 +73,50 @@ def get_position(trading_client: TradingClient, symbol: str):
         return trading_client.get_open_position(symbol)
     except Exception:
         return None
+
+
+def get_orders(trading_client: TradingClient, status: QueryOrderStatus = QueryOrderStatus.OPEN):
+    """Return Alpaca orders for the requested status.
+
+    The bot uses broker orders as operational truth for pending/working
+    state instead of inferring that from local memory or prior logs.
+    """
+    request = GetOrdersRequest(status=status, nested=False)
+
+    try:
+        return list(trading_client.get_orders(filter=request))
+    except TypeError:
+        try:
+            return list(trading_client.get_orders(request))
+        except Exception as exc:
+            print(f"Error getting orders: {exc}")
+            return []
+    except Exception as exc:
+        print(f"Error getting orders: {exc}")
+        return []
+
+
+def get_working_orders(trading_client: TradingClient, symbol: str | None = None) -> list:
+    """Return non-final Alpaca orders, optionally filtered to one symbol."""
+    orders = get_orders(trading_client, status=QueryOrderStatus.OPEN)
+    if symbol is None:
+        return [order for order in orders if not is_final_order_status(get_order_status(order))]
+    return [
+        order
+        for order in orders
+        if not is_final_order_status(get_order_status(order)) and _symbol_matches(order, symbol)
+    ]
+
+
+def get_protective_stop_order(trading_client: TradingClient, symbol: str):
+    """Return the first open sell stop order for the symbol, if one exists."""
+    for order in get_working_orders(trading_client, symbol):
+        if _serialize_enum(getattr(order, "side", "")) != "sell":
+            continue
+        if _serialize_enum(getattr(order, "order_type", getattr(order, "type", ""))) != "stop":
+            continue
+        return order
+    return None
 
 
 def build_market_order_request(symbol: str, side: OrderSide, qty: int) -> MarketOrderRequest:

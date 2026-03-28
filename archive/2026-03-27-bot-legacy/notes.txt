@@ -1,0 +1,2 @@
+These logs were generated before bot_version tracking was added.
+They reflect the legacy bot architecture used before the 0.3.0 config-driven, strategy-plugin refactor.

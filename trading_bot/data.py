@@ -1,7 +1,7 @@
 """Fetches recent Alpaca market data used by the trading bot."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 from alpaca.data.enums import DataFeed
@@ -38,17 +38,49 @@ def _parse_interval(interval: str) -> TimeFrame:
     raise ValueError(f"Unsupported interval format: {interval}")
 
 
+def _interval_to_timedelta(interval: str) -> timedelta:
+    """Convert the strategy interval string into a Python timedelta."""
+    interval = interval.strip().lower()
+
+    if interval.endswith("m"):
+        return timedelta(minutes=int(interval[:-1]))
+    if interval.endswith("h"):
+        return timedelta(hours=int(interval[:-1]))
+    if interval.endswith("d"):
+        return timedelta(days=int(interval[:-1]))
+
+    raise ValueError(f"Unsupported interval format: {interval}")
+
+
+def _estimate_request_start(end: datetime, interval: str, lookback_bars: int) -> datetime:
+    """Estimate a safe start time so Alpaca returns enough history for indicators.
+
+    Intraday requests need extra room for overnight gaps, weekends, and holidays.
+    Daily requests also use a wider window so non-trading days do not starve the bot.
+    """
+    bar_delta = _interval_to_timedelta(interval)
+    interval = interval.strip().lower()
+
+    if interval.endswith(("m", "h")):
+        safety_multiplier = 12
+    else:
+        safety_multiplier = 3
+
+    return end - (bar_delta * lookback_bars * safety_multiplier)
+
+
 def download_data(symbol: str, interval: str, lookback_bars: int) -> pd.DataFrame:
     """Download recent OHLCV bars from Alpaca for one symbol.
 
     `interval` controls the bar size, while `lookback_bars` controls how
     much recent history we pull to compute indicators like SMA-20 and SMA-50.
     """
+    end = datetime.now(timezone.utc)
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=_parse_interval(interval),
-        end=datetime.now(timezone.utc),
-        limit=lookback_bars,
+        start=_estimate_request_start(end, interval, lookback_bars),
+        end=end,
         # IEX is Alpaca's free stock feed. It is good enough for paper
         # testing here, but it can differ from broader consolidated feeds.
         feed=DataFeed.IEX,
@@ -76,4 +108,8 @@ def download_data(symbol: str, interval: str, lookback_bars: int) -> pd.DataFram
         }
     )
 
-    return df[["Open", "High", "Low", "Close", "Volume"]].dropna().copy()
+    cleaned = df[["Open", "High", "Low", "Close", "Volume"]].dropna().copy()
+    if len(cleaned) > lookback_bars:
+        cleaned = cleaned.tail(lookback_bars).copy()
+
+    return cleaned

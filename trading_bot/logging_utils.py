@@ -1,14 +1,25 @@
-"""Writes decision and trade logs for later review of bot behavior."""
+"""Writes decision and trade logs for later review of bot behavior.
+
+These logs are observational records for audit and analysis. The bot's
+live operational decisions should rely on market data plus Alpaca state,
+not on previously written log rows.
+"""
 
 import csv
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 
 DECISION_LOG_FIELDS = [
+    "decision_id",
     "timestamp",
+    "bot_version",
     "symbol",
     "strategy",
+    "strategy_version",
+    "interval",
     "action",
     "reason",
     "latest_close",
@@ -16,18 +27,18 @@ DECISION_LOG_FIELDS = [
     "buying_power",
     "in_position",
     "qty",
-    "sma_fast",
-    "sma_slow",
-    "signal",
-    "crossover",
     "market_is_open",
     "force_test_trade",
     "force_direction",
 ]
 
 TRADE_LOG_FIELDS = [
+    "decision_id",
     "timestamp",
+    "bot_version",
     "symbol",
+    "strategy",
+    "strategy_version",
     "intended_action",
     "strategy_reason",
     "order_id",
@@ -46,6 +57,8 @@ TRADE_LOG_FIELDS = [
     "note",
 ]
 
+STRATEGY_CONTEXT_LOG_PATH = "strategy_context_log.jsonl"
+
 
 def _utc_timestamp() -> str:
     """Return a UTC timestamp in a CSV-friendly ISO-8601 format."""
@@ -55,6 +68,11 @@ def _utc_timestamp() -> str:
 def _normalize_row(row: dict, fieldnames: list[str]) -> dict:
     """Fill missing fields with blanks so the CSV schema stays stable."""
     return {field: row.get(field, "") for field in fieldnames}
+
+
+def make_event_id() -> str:
+    """Return a compact unique identifier for one logged bot decision."""
+    return uuid4().hex
 
 
 def _read_existing_rows(path: Path) -> list[dict]:
@@ -83,6 +101,13 @@ def _append_csv_row(file_path: str, fieldnames: list[str], row: dict) -> None:
     _write_rows(path, fieldnames, rows)
 
 
+def _append_jsonl_row(file_path: str, row: dict) -> None:
+    """Append one JSON object per line for flexible log schemas."""
+    path = Path(file_path)
+    with path.open("a", encoding="utf-8") as jsonl_file:
+        jsonl_file.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
 def log_trade(trade_data: dict) -> None:
     """Record the final known state of an Alpaca order in the trade log."""
     row = _normalize_row(trade_data, TRADE_LOG_FIELDS)
@@ -97,3 +122,11 @@ def log_decision(decision_data: dict) -> None:
     if not row["timestamp"]:
         row["timestamp"] = _utc_timestamp()
     _append_csv_row("decision_log.csv", DECISION_LOG_FIELDS, row)
+
+
+def log_strategy_context(context_data: dict) -> None:
+    """Record flexible strategy-specific context as JSONL for later analysis."""
+    row = dict(context_data)
+    if not row.get("timestamp"):
+        row["timestamp"] = _utc_timestamp()
+    _append_jsonl_row(STRATEGY_CONTEXT_LOG_PATH, row)

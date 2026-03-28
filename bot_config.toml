@@ -1,0 +1,40 @@
+[bot]
+version = "0.3.0"
+run_continuously = true
+poll_interval_seconds = 60
+paper_trading = true
+
+[execution]
+order_status_poll_seconds = 2
+order_status_timeout_seconds = 30
+enable_broker_side_stop_loss = true
+force_test_trade = false
+force_direction = "SELL"
+
+[risk]
+max_position_qty = 5
+risk_fraction_of_buying_power = 0.02
+stop_loss_pct = 0.03
+take_profit_pct = 0.06
+
+[[symbols]]
+ticker = "AAPL"
+
+[symbols.strategy]
+name = "sma_crossover"
+version = "v1"
+interval = "1m"
+lookback_bars = 1000
+fast_window = 8
+slow_window = 20
+
+[[symbols]]
+ticker = "ALB"
+
+[symbols.strategy]
+name = "sma_crossover"
+version = "v1"
+interval = "1m"
+lookback_bars = 1000
+fast_window = 8
+slow_window = 20
