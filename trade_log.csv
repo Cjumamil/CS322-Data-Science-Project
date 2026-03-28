@@ -1,0 +1,4 @@
+timestamp,symbol,intended_action,strategy_reason,order_id,client_order_id,order_type,requested_qty,filled_qty,final_status,decision_price,filled_avg_price,submitted_at,filled_at,canceled_at,failed_at,expired_at,note
+2026-03-27T19:30:58Z,ALB,BUY,sma_crossover,6ee26a1f-de14-4f00-bbd1-fdecf414ac94,dab6235b-860f-4bdf-be27-7e1641e4b7c8,market,5,5,filled,178.21,178.27,2026-03-27 19:30:56.935766+00:00,2026-03-27 19:30:58.419732+00:00,,,,
+2026-03-27T19:51:17Z,ALB,SELL,sma_crossover,2f97765c-6a0e-412c-a19b-01abea5970f2,c4b645f7-4a1b-40ae-b4b6-1d6338ef1de4,market,5,5,filled,178.32,178.25,2026-03-27 19:51:16.005940+00:00,2026-03-27 19:51:17.424875+00:00,,,,
+2026-03-27T19:53:21Z,ALB,BUY,sma_crossover,f0cff60c-8809-475d-8e27-02f732f6e8c6,7a47e25e-535e-470d-afab-aec2449b7a08,market,5,5,filled,178.325,178.45,2026-03-27 19:53:19.736787+00:00,2026-03-27 19:53:21.231507+00:00,,,,
