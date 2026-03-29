@@ -1,32 +1,38 @@
+# Global bot/runtime settings.
+# `version` tracks the overall bot build, separate from individual strategy versions.
 [bot]
 version = "0.3.0"
 run_continuously = true
-poll_interval_seconds = 60
+poll_interval_seconds = 60 # Seconds to wait between full multi-symbol polling cycles.
 paper_trading = true
 
+# Execution/mechanical behavior rather than signal logic.
 [execution]
-order_status_poll_seconds = 2
-order_status_timeout_seconds = 30
+order_status_poll_seconds = 2 # How often to re-check submitted orders while waiting on Alpaca.
+order_status_timeout_seconds = 30 # Maximum time to wait for order status changes before moving on.
 enable_broker_side_stop_loss = true
-force_test_trade = false
-force_direction = "SELL"
+force_test_trade = false # When true, bypasses strategy signals and forces a manual test trade.
+force_direction = "SELL" # Used only when `force_test_trade = true`.
 
+# Shared risk settings currently applied across all configured symbols.
 [risk]
-max_position_qty = 5
-risk_fraction_of_buying_power = 0.02
+max_position_qty = 5 # Hard cap on shares for a single order.
+risk_fraction_of_buying_power = 0.02 # Fraction of buying power considered when sizing entries.
 stop_loss_pct = 0.03
 take_profit_pct = 0.06
 
+# One `[[symbols]]` block per stock. Each symbol currently has one active strategy.
 [[symbols]]
 ticker = "AAPL"
 
+# Strategy config is nested under the most recent `[[symbols]]` entry.
 [symbols.strategy]
 name = "sma_crossover"
-version = "v1"
-interval = "1m"
-lookback_bars = 1000
-fast_window = 8
-slow_window = 20
+version = "v1" # Strategy-logic version, separate from the overall bot version.
+interval = "1m" # Candle interval used for market data and indicator calculations.
+lookback_bars = 1000 # Raw bars requested before indicator warmup rows are dropped.
+fast_window = 8 # SMA fast window for the current SMA crossover strategy.
+slow_window = 20 # SMA slow window for the current SMA crossover strategy.
 
 [[symbols]]
 ticker = "ALB"
