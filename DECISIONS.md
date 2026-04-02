@@ -175,3 +175,31 @@ Focus on capturing decision and intent.
 **Decision:** Archive historical `decision_log.csv` and `trade_log.csv` files into dated subfolders under `archive/`, using a naming convention such as `YYYY-MM-DD-bot-legacy` or `YYYY-MM-DD-bot-X.Y.Z`, and include a short `notes.txt` file when helpful.  
 **Reasoning:** As the bot's architecture and logging model evolve, old logs can become harder to interpret if they remain mixed with current runs. Moving prior logs into clearly named archive folders preserves the historical record, creates a clean boundary for new runs, and makes it easier to understand which bot generation produced a given set of files. A short note file adds context when a version boundary or architectural shift is not obvious from the archived CSVs alone.  
 **Approved by:** Joshua  
+
+## D-022  
+**Date:** 2026-04-02  
+**Topic:** MACD Pullback Strategy and Offline Research Workflow  
+**Decision:** Add `macd_pullback` as a second pluggable strategy alongside `sma_crossover`, and create a separate offline backtesting workflow that can simulate historical runs independently from the live paper-trading bot.  
+**Reasoning:** The project needed a more realistic trend-following strategy than the initial SMA crossover baseline, but adding it should not break the modular strategy architecture. Separating offline backtesting from live trading keeps research and experimentation clean, makes it easier to compare strategies and symbols, and avoids overloading the live runtime with historical-simulation concerns. This also supports saving artifacts such as trade CSVs, summary JSON files, and charts for later analysis.  
+**Approved by:** Joshua  
+
+## D-023  
+**Date:** 2026-04-02  
+**Topic:** Direction-Aware Trading Architecture  
+**Decision:** Refactor the bot from a long-only mental model into a direction-aware model that explicitly supports flat, long, and short positions in both live paper trading and backtesting.  
+**Reasoning:** The original execution flow assumed `BUY` meant open and `SELL` meant close, which was too limited for a strategy like `macd_pullback` that can generate both long and short signals. Moving to an explicit position-side model makes the architecture cleaner, improves correctness, and better matches real trading behavior. It also keeps Alpaca broker state as the operational source of truth while allowing strategies to express directional intent more naturally.  
+**Approved by:** Joshua  
+
+## D-024  
+**Date:** 2026-04-02  
+**Topic:** Structure-Based Risk Model for MACD Pullback  
+**Decision:** Use an EMA200-based stop-loss with a small buffer and a fixed `1.5R` take-profit for `macd_pullback`, and reject entries whose stop distance is too large relative to price using a configurable `max_stop_distance_frac_of_price` filter.  
+**Reasoning:** The original shared percent-based stop-loss and take-profit model did not fit the structure-based logic of the MACD pullback setup. Using EMA200 as the stop reference ties risk to the underlying trend structure, while a fixed reward-to-risk target keeps trade management simple and consistent. Adding a maximum stop-distance filter helps avoid low-quality trades where price has already moved too far from the EMA and the required risk becomes too large.  
+**Approved by:** Joshua  
+
+## D-025  
+**Date:** 2026-04-02  
+**Topic:** Strategy-Aware Trade Management for MACD Pullback  
+**Decision:** Keep hard risk exits in the shared risk layer, but allow `macd_pullback` to add configurable strategy-aware exits and entry refinements, including time stops, delayed MACD momentum-failure exits, and histogram confirmation at entry.  
+**Reasoning:** Some trade-management rules are generic across strategies, while others are specific to how a given strategy expresses momentum and follow-through. Keeping stop-loss and take-profit logic centralized preserves a clean shared risk model, while strategy-specific exits and entry filters allow `macd_pullback` to reduce stagnant trades and weaker crossovers without turning the shared risk layer into strategy-specific code. This hybrid approach improves modularity, readability, and extensibility for future strategies.  
+**Approved by:** Joshua  

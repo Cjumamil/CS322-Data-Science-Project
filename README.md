@@ -21,11 +21,12 @@ The system is designed to simulate real-world trading behavior, including:
 * Config-driven setup via `bot_config.toml`
 * Multi-symbol sequential evaluation in one run
 * Pluggable strategy architecture
-* Current built-in strategy: SMA crossover
+* Current built-in strategies: SMA crossover and MACD pullback
 * Paper trading mode (no real money used)
 * Trade logging with linked decision/trade IDs
 * Flexible strategy context logging in JSONL
 * Broker-state-aware order/position handling
+* Direction-aware paper trading for flat, long, and short positions
 * Basic risk management (broker-side stop-loss and loop-based take-profit)
 
 ---
@@ -45,7 +46,8 @@ trading_bot/
 |-- decision_logging.py   # Decision and strategy-context log payload builders
 `-- strategies/
     |-- base.py           # Shared strategy interface/helpers
-    `-- sma_crossover.py  # Current SMA crossover strategy
+    |-- sma_crossover.py  # SMA crossover strategy
+    `-- macd_pullback.py  # EMA-200 + MACD pullback strategy
 
 bot_config.toml           # Bot/runtime/risk settings + per-symbol strategy assignments
 ```
@@ -57,7 +59,7 @@ bot_config.toml           # Bot/runtime/risk settings + per-symbol strategy assi
 #### 1. Install dependencies
 
 ```bash
-pip install alpaca-py python-dotenv pandas
+pip install alpaca-py python-dotenv pandas matplotlib
 ```
 
 #### 2. Create a `.env` file in the project root
@@ -81,6 +83,7 @@ The current sample config includes:
 
 * `AAPL` with `sma_crossover`
 * `ALB` with `sma_crossover`
+* `MSFT` with `macd_pullback` on `5m` bars
 
 #### 4. Run the bot
 
@@ -89,6 +92,16 @@ From the project root directory:
 ```bash
 python -m trading_bot.main
 ```
+
+#### 5. Run an offline backtest
+
+Use the separate backtest entry point for historical analysis:
+
+```bash
+python -m trading_bot.backtest --symbol MSFT --strategy macd_pullback --start 2025-01-01 --end 2025-03-31
+```
+
+This saves artifacts under `backtests/`, with each run stored in its own timestamped folder containing a trade CSV, summary JSON, and chart image.
 
 ---
 
@@ -109,6 +122,7 @@ The bot writes three main logs in the project root:
 * `decision_log.csv` - stable, spreadsheet-friendly record of bot decisions
 * `trade_log.csv` - execution/fill log with order lifecycle details
 * `strategy_context_log.jsonl` - flexible strategy-specific context for each decision
+* `backtests/*.csv|json|png` - offline backtest trade logs, summaries, and charts
 
 `decision_id` links the decision log, trade log, and strategy context entries together.
 
@@ -119,7 +133,8 @@ The bot writes three main logs in the project root:
 * Order tracking is polling-based (not real-time streaming)
 * Take-profit logic is loop-based, not broker-side
 * Symbols are processed sequentially, not concurrently
-* Strategy support is still early-stage and currently includes one built-in strategy
+* Order tracking is still polling-based rather than event-stream based
+* Broker-side stop placement for short positions depends on Alpaca accepting buy stop orders on the symbol in paper trading
 
 ---
 

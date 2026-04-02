@@ -32,6 +32,8 @@ def build_decision_payload(
     entry_price,
     buying_power: float,
     in_position: bool,
+    position_side: str,
+    position_qty: int,
     force_test_trade: bool,
     force_direction: str,
     action: str,
@@ -52,6 +54,8 @@ def build_decision_payload(
         "entry_price": entry_price,
         "buying_power": buying_power,
         "in_position": in_position,
+        "position_side": position_side,
+        "position_qty": position_qty,
         "qty": qty,
         "market_is_open": market_open,
         "force_test_trade": force_test_trade,
@@ -69,7 +73,6 @@ def build_strategy_context_payload(
     reason: str,
     market_open: Optional[bool],
     qty: int,
-    position,
     entry_price,
     buying_power: float,
     account_status,
@@ -100,8 +103,10 @@ def build_strategy_context_payload(
         "reason": reason,
         "market_is_open": market_open,
         "position": {
-            "in_position": position is not None,
-            "qty": float(position.qty) if position is not None else 0,
+            "in_position": live_state["in_position"],
+            "side": live_state["position_side"],
+            "qty": live_state["position_qty"],
+            "signed_qty": live_state["signed_position_qty"],
             "entry_price": entry_price,
         },
         "account": {
@@ -128,17 +133,24 @@ def build_strategy_context_payload(
         },
         "strategy_signals": strategy_signals,
         "broker_state": {
+            "position_side": live_state["position_side"],
+            "position_qty": live_state["position_qty"],
             "working_order_count": len(live_state["working_orders"]),
             "blocking_order_count": len(live_state["blocking_orders"]),
+            "stop_order_count": len(live_state["stop_orders"]),
             "protective_stop_order_id": serialize_value(
                 getattr(live_state["protective_stop_order"], "id", "")
             ),
             "protective_stop_price": serialize_value(
                 getattr(live_state["protective_stop_order"], "stop_price", "")
             ),
+            "protective_stop_side": serialize_value(
+                getattr(live_state["protective_stop_order"], "side", "")
+            ),
         },
         "decision": {
             "qty": qty,
+            "position_side": live_state["position_side"],
         },
     }
 

@@ -12,7 +12,7 @@ order_status_poll_seconds = 2 # How often to re-check submitted orders while wai
 order_status_timeout_seconds = 30 # Maximum time to wait for order status changes before moving on.
 enable_broker_side_stop_loss = true
 force_test_trade = false # When true, bypasses strategy signals and forces a manual test trade.
-force_direction = "SELL" # Used only when `force_test_trade = true`.
+force_direction = "SELL" # BUY enters long or covers short; SELL enters short or exits long.
 
 # Shared risk settings currently applied across all configured symbols.
 [risk]
@@ -38,9 +38,58 @@ slow_window = 20 # SMA slow window for the current SMA crossover strategy.
 ticker = "ALB"
 
 [symbols.strategy]
-name = "sma_crossover"
+name = "macd_pullback"
 version = "v1"
-interval = "1m"
-lookback_bars = 1000
-fast_window = 8
-slow_window = 20
+interval = "5m"
+lookback_bars = 500
+macd_fast_window = 12
+macd_slow_window = 26
+macd_signal_window = 9
+trend_ema_window = 200
+opening_no_trade_bars = 6
+ema_slope_lookback = 12
+recent_range_lookback = 12
+ema_slope_threshold = 0.08
+min_recent_range_frac_of_price = 0.003
+macd_near_zero_lookback = 20
+sideways_macd_near_zero_threshold = 0.20
+pullback_reset_zone_threshold = 0.35
+pullback_memory_bars = 8
+ema_stop_buffer_pct = 0.001
+take_profit_risk_multiple = 1.5
+max_stop_distance_frac_of_price = 0.04
+enable_histogram_entry_confirmation = true
+enable_time_stop = true
+max_bars_in_trade = 18
+enable_macd_failure_exit = true
+min_bars_before_macd_exit = 6
+
+[[symbols]]
+ticker = "MSFT"
+
+[symbols.strategy]
+name = "macd_pullback"
+version = "v1"
+interval = "5m"
+lookback_bars = 500
+macd_fast_window = 12
+macd_slow_window = 26
+macd_signal_window = 9
+trend_ema_window = 200
+opening_no_trade_bars = 6
+ema_slope_lookback = 12
+recent_range_lookback = 12
+ema_slope_threshold = 0.08
+min_recent_range_frac_of_price = 0.003
+macd_near_zero_lookback = 20
+sideways_macd_near_zero_threshold = 0.20
+pullback_reset_zone_threshold = 0.35
+pullback_memory_bars = 8
+ema_stop_buffer_pct = 0.001
+take_profit_risk_multiple = 1.5
+max_stop_distance_frac_of_price = 0.02
+enable_histogram_entry_confirmation = true
+enable_time_stop = true
+max_bars_in_trade = 18
+enable_macd_failure_exit = true
+min_bars_before_macd_exit = 4

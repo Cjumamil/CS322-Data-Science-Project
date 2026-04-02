@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from trading_bot.strategies.base import TradingStrategy, calculate_standard_backtest_metrics
+from trading_bot.strategies.base import PositionContext, TradingStrategy, calculate_standard_backtest_metrics
 
 
 @dataclass(frozen=True)
@@ -53,17 +53,44 @@ class SmaCrossoverStrategy(TradingStrategy):
     def event_key(self, latest_row: pd.Series):
         return float(latest_row["crossover"])
 
+    def entry_action(self, latest_row: pd.Series) -> str | None:
+        if self.should_enter_long(latest_row):
+            return "BUY"
+        if self.should_enter_short(latest_row):
+            return "SELL"
+        return None
+
+    def exit_action(self, latest_row: pd.Series, position_context: PositionContext | None = None) -> str | None:
+        position_side = "flat" if position_context is None else position_context.side
+        if position_side == "long" and self.should_exit_long(latest_row, position_context):
+            return "SELL"
+        if position_side == "short" and self.should_exit_short(latest_row, position_context):
+            return "BUY"
+        return None
+
     def should_enter_long(self, latest_row: pd.Series) -> bool:
         return float(latest_row["crossover"]) == 1.0
 
-    def should_exit_long(self, latest_row: pd.Series) -> bool:
+    def should_enter_short(self, latest_row: pd.Series) -> bool:
+        return False
+
+    def should_exit_long(self, latest_row: pd.Series, position_context: PositionContext | None = None) -> bool:
         return float(latest_row["crossover"]) == -1.0
+
+    def should_exit_short(self, latest_row: pd.Series, position_context: PositionContext | None = None) -> bool:
+        return False
 
     def entry_reason(self) -> str:
         return self.name
 
-    def exit_reason(self) -> str:
+    def exit_reason(self, latest_row: pd.Series | None = None, position_context: PositionContext | None = None) -> str:
         return self.name
+
+    def build_entry_risk_plan(self, latest_row: pd.Series, position_side: str, risk_settings) -> dict | None:
+        return None
+
+    def risk_reward_multiple(self) -> float | None:
+        return None
 
     def build_strategy_parameters(self) -> dict:
         return {
@@ -71,7 +98,7 @@ class SmaCrossoverStrategy(TradingStrategy):
             "slow_window": self.slow_window,
         }
 
-    def build_strategy_signals(self, latest_row: pd.Series) -> dict:
+    def build_strategy_signals(self, latest_row: pd.Series, position_context: PositionContext | None = None) -> dict:
         return {
             "sma_fast": float(latest_row["SMA_FAST"]),
             "sma_slow": float(latest_row["SMA_SLOW"]),

@@ -1,9 +1,22 @@
 """Shared strategy interfaces and generic backtest helpers."""
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 import pandas as pd
+
+StrategyAction = Literal["BUY", "SELL"]
+PositionSide = Literal["flat", "long", "short"]
+
+
+@dataclass(frozen=True)
+class PositionContext:
+    """Minimal position context used by strategy-aware exits."""
+
+    side: PositionSide
+    entry_price: float | None = None
+    bars_in_trade: int | None = None
+    entry_signal_time: str | None = None
 
 
 class TradingStrategy(Protocol):
@@ -20,12 +33,43 @@ class TradingStrategy(Protocol):
     def latest_signal_label(self) -> str: ...
     def latest_signal_value(self, latest_row: pd.Series): ...
     def event_key(self, latest_row: pd.Series): ...
+    def entry_action(self, latest_row: pd.Series) -> StrategyAction | None: ...
+    def exit_action(
+        self,
+        latest_row: pd.Series,
+        position_context: PositionContext | None = None,
+    ) -> StrategyAction | None: ...
     def should_enter_long(self, latest_row: pd.Series) -> bool: ...
-    def should_exit_long(self, latest_row: pd.Series) -> bool: ...
+    def should_enter_short(self, latest_row: pd.Series) -> bool: ...
+    def should_exit_long(
+        self,
+        latest_row: pd.Series,
+        position_context: PositionContext | None = None,
+    ) -> bool: ...
+    def should_exit_short(
+        self,
+        latest_row: pd.Series,
+        position_context: PositionContext | None = None,
+    ) -> bool: ...
     def entry_reason(self) -> str: ...
-    def exit_reason(self) -> str: ...
+    def exit_reason(
+        self,
+        latest_row: pd.Series | None = None,
+        position_context: PositionContext | None = None,
+    ) -> str: ...
+    def build_entry_risk_plan(
+        self,
+        latest_row: pd.Series,
+        position_side: PositionSide,
+        risk_settings,
+    ) -> dict | None: ...
+    def risk_reward_multiple(self) -> float | None: ...
     def build_strategy_parameters(self) -> dict: ...
-    def build_strategy_signals(self, latest_row: pd.Series) -> dict: ...
+    def build_strategy_signals(
+        self,
+        latest_row: pd.Series,
+        position_context: PositionContext | None = None,
+    ) -> dict: ...
     def calculate_backtest_metrics(self, df: pd.DataFrame) -> dict: ...
 
 

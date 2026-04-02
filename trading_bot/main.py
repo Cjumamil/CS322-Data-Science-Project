@@ -1,8 +1,7 @@
 """Runs the trading bot workflow from data download through order decisions."""
 
 import time
-
-from alpaca.trading.enums import OrderSide
+import pandas as pd
 
 from trading_bot.broker import connect_alpaca, get_account, market_is_open
 from trading_bot.config import BotConfig, SymbolAssignment, load_config
@@ -15,14 +14,20 @@ from trading_bot.decision_logging import (
     serialize_value,
 )
 from trading_bot.execution import (
-    cancel_protective_stop_if_needed,
-    handle_entry_signals,
     handle_exit_triggers,
     handle_pending_order_state,
     submit_and_track_order,
+    cancel_stop_orders_if_needed,
+    handle_strategy_actions,
 )
-from trading_bot.risk import calculate_order_qty, should_exit_position
-from trading_bot.state import get_live_broker_state
+from trading_bot.risk import (
+    build_exit_levels_for_live_position,
+    build_exit_levels_from_entry_plan,
+    calculate_order_qty,
+    should_exit_position,
+)
+from trading_bot.strategies.base import PositionContext
+from trading_bot.state import get_active_exit_levels, get_live_broker_state
 
 
 def print_metrics(metrics: dict) -> None:
@@ -33,6 +38,29 @@ def print_metrics(metrics: dict) -> None:
             print(f"{key}: {value:.4f}")
         else:
             print(f"{key}: {value}")
+
+
+def build_live_position_context(df, live_state: dict, active_exit_levels: dict | None) -> PositionContext | None:
+    """Build position context for strategy-aware exits from live bot state."""
+    position_side = live_state["position_side"]
+    if position_side not in {"long", "short"}:
+        return None
+
+    entry_signal_time = None if active_exit_levels is None else active_exit_levels.get("entry_signal_time")
+    bars_in_trade = None
+    if entry_signal_time:
+        try:
+            entry_signal_timestamp = pd.Timestamp(entry_signal_time)
+            bars_in_trade = int((df.index > entry_signal_timestamp).sum())
+        except Exception:
+            bars_in_trade = None
+
+    return PositionContext(
+        side=position_side,
+        entry_price=live_state["entry_price"],
+        bars_in_trade=bars_in_trade,
+        entry_signal_time=entry_signal_time,
+    )
 
 
 def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, symbol_config: SymbolAssignment) -> None:
@@ -119,13 +147,32 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
 
     # Check the symbol's current live broker state before making a new decision.
     live_state = get_live_broker_state(trading_client, symbol)
-    position = live_state["position"]
     in_position = live_state["in_position"]
+    position_side = live_state["position_side"]
+    position_qty = live_state["position_qty"]
     entry_price = live_state["entry_price"]
-    print(f"Currently holding {symbol}: {in_position}")
+    active_exit_levels = None
+    if position_side in {"long", "short"} and entry_price is not None:
+        active_exit_levels = build_exit_levels_for_live_position(
+            entry_price=entry_price,
+            position_side=position_side,
+            stop_loss_pct=config.risk.stop_loss_pct,
+            take_profit_pct=config.risk.take_profit_pct,
+            protective_stop_order=live_state["protective_stop_order"],
+            active_exit_levels=get_active_exit_levels(session_state, symbol),
+            risk_reward_multiple=strategy.risk_reward_multiple(),
+        )
+    position_context = build_live_position_context(df, live_state, active_exit_levels)
+    strategy_entry_action = strategy.entry_action(latest)
+    strategy_exit_action = strategy.exit_action(latest, position_context)
+    strategy_exit_reason = strategy.exit_reason(latest, position_context)
+    print(f"Current position for {symbol}: {position_side} (qty={position_qty})")
     if live_state["protective_stop_order"] is not None:
         stop_price = serialize_value(getattr(live_state["protective_stop_order"], "stop_price", ""))
-        print(f"Protective stop currently active at Alpaca: {stop_price}")
+        stop_side = serialize_value(getattr(live_state["protective_stop_order"], "side", ""))
+        print(f"Protective stop currently active at Alpaca: side={stop_side}, stop={stop_price}")
+    elif live_state["stop_orders"]:
+        print(f"Open stop orders at Alpaca without an active matching position stop: {len(live_state['stop_orders'])}")
     if live_state["blocking_orders"]:
         print(f"Non-protective working orders at Alpaca: {len(live_state['blocking_orders'])}")
 
@@ -142,6 +189,8 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             entry_price=entry_price,
             buying_power=buying_power,
             in_position=in_position,
+            position_side=position_side,
+            position_qty=position_qty,
             force_test_trade=config.execution.force_test_trade,
             force_direction=config.execution.force_direction,
             action=action,
@@ -158,7 +207,6 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             reason=reason,
             market_open=market_open,
             qty=qty,
-            position=position,
             entry_price=entry_price,
             buying_power=buying_power,
             account_status=account.status,
@@ -170,7 +218,30 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             bar_start=first_bar_timestamp,
             bar_end=last_bar_timestamp,
             strategy_parameters=strategy.build_strategy_parameters(),
-            strategy_signals=strategy.build_strategy_signals(latest),
+            strategy_signals={
+                **strategy.build_strategy_signals(latest, position_context),
+                "resolved_entry_action": strategy_entry_action,
+                "resolved_exit_action": strategy_exit_action,
+                "resolved_exit_reason": strategy_exit_reason,
+                "active_stop_price": None if active_exit_levels is None else active_exit_levels["stop_price"],
+                "active_take_profit_price": None if active_exit_levels is None else active_exit_levels["take_profit_price"],
+                "active_stop_source": None if active_exit_levels is None else active_exit_levels["stop_source"],
+                "active_risk_reward_multiple": None
+                if active_exit_levels is None
+                else active_exit_levels["risk_reward_multiple"],
+                "active_stop_distance": None
+                if active_exit_levels is None
+                else active_exit_levels["stop_distance"],
+                "active_stop_distance_frac_of_price": None
+                if active_exit_levels is None
+                else active_exit_levels["stop_distance_frac_of_price"],
+                "active_max_stop_distance_frac_of_price": None
+                if active_exit_levels is None
+                else active_exit_levels["max_stop_distance_frac_of_price"],
+                "active_entry_signal_time": None
+                if active_exit_levels is None
+                else active_exit_levels["entry_signal_time"],
+            },
             stop_loss_pct=config.risk.stop_loss_pct,
             take_profit_pct=config.risk.take_profit_pct,
             risk_fraction_of_buying_power=config.risk.risk_fraction_of_buying_power,
@@ -191,6 +262,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         strategy_name=strategy.name,
         strategy_version=strategy.version,
         stop_loss_pct=config.risk.stop_loss_pct,
+        take_profit_pct=config.risk.take_profit_pct,
         enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
         serialize_value=serialize_value,
     ):
@@ -208,71 +280,139 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
 
         # In force BUY mode, enter a position if one is not already open.
         if config.execution.force_direction.upper() == "BUY":
-            if in_position:
-                print("Already in a position. Force BUY skipped.")
-                log_decision_for_cycle("HOLD", "force_buy_skipped_in_position", market_open=True)
+            if position_side == "long":
+                print("Already in a long position. Force BUY skipped.")
+                log_decision_for_cycle("HOLD", "force_buy_skipped_long_position", market_open=True)
                 return
 
-            # Size the forced BUY order using the configured risk limits.
-            qty = calculate_order_qty(
-                latest_close,
-                buying_power,
-                config.risk.risk_fraction_of_buying_power,
-                config.risk.max_position_qty,
-            )
+            if position_side == "flat":
+                if live_state["stop_orders"]:
+                    print("Flat symbol still has stop orders at Alpaca. Forced BUY paused.")
+                    log_decision_for_cycle("HOLD", "stale_protective_stop_exists", market_open=True)
+                    return
+                qty = calculate_order_qty(
+                    latest_close,
+                    buying_power,
+                    config.risk.risk_fraction_of_buying_power,
+                    config.risk.max_position_qty,
+                )
+                resulting_side = "long"
+                entry_risk_plan = strategy.build_entry_risk_plan(latest, resulting_side, config.risk)
+                if build_exit_levels_from_entry_plan(
+                    entry_price=latest_close,
+                    position_side=resulting_side,
+                    stop_loss_pct=config.risk.stop_loss_pct,
+                    take_profit_pct=config.risk.take_profit_pct,
+                    entry_risk_plan=entry_risk_plan,
+                ) is None:
+                    print("Forced BUY skipped because the strategy could not build valid exit levels.")
+                    log_decision_for_cycle(
+                        "HOLD",
+                        "invalid_entry_risk_plan"
+                        if entry_risk_plan is None or not entry_risk_plan.get("rejection_reason")
+                        else str(entry_risk_plan["rejection_reason"]),
+                        market_open=True,
+                    )
+                    return
+            else:
+                qty = position_qty
+                resulting_side = "flat"
+                entry_risk_plan = None
+                cancel_stop_orders_if_needed(trading_client, symbol)
+
             decision_id = log_decision_for_cycle("BUY", "forced_test_trade", qty=qty, market_open=True)
             submit_and_track_order(
                 trading_client=trading_client,
                 session_state=session_state,
                 symbol=symbol,
                 action="BUY",
-                side=OrderSide.BUY,
                 qty=qty,
                 event_key=latest_event_key,
                 reason="forced_test_trade",
                 decision_price=latest_close,
                 decision_id=decision_id,
+                position_side_before=position_side,
+                position_side_after=resulting_side,
                 bot_version=config.bot.version,
                 strategy_name=strategy.name,
                 strategy_version=strategy.version,
                 order_status_poll_seconds=config.execution.order_status_poll_seconds,
                 order_status_timeout_seconds=config.execution.order_status_timeout_seconds,
                 stop_loss_pct=config.risk.stop_loss_pct,
+                take_profit_pct=config.risk.take_profit_pct,
                 enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
                 serialize_value=serialize_value,
+                entry_risk_plan=entry_risk_plan,
+                signal_time=latest.name.isoformat() if hasattr(latest.name, "isoformat") else str(latest.name),
             )
             return
 
         # In force SELL mode, close the current position if one exists.
         if config.execution.force_direction.upper() == "SELL":
-            if not in_position:
-                print("No open position. Force SELL skipped.")
-                log_decision_for_cycle("HOLD", "force_sell_skipped_no_position", market_open=True)
+            if position_side == "short":
+                print("Already in a short position. Force SELL skipped.")
+                log_decision_for_cycle("HOLD", "force_sell_skipped_short_position", market_open=True)
                 return
 
-            # Cancel the stop order first so it does not conflict with the manual exit.
-            qty = int(float(position.qty))
-            cancel_protective_stop_if_needed(trading_client, symbol)
+            if position_side == "flat":
+                if live_state["stop_orders"]:
+                    print("Flat symbol still has stop orders at Alpaca. Forced SELL paused.")
+                    log_decision_for_cycle("HOLD", "stale_protective_stop_exists", market_open=True)
+                    return
+                qty = calculate_order_qty(
+                    latest_close,
+                    buying_power,
+                    config.risk.risk_fraction_of_buying_power,
+                    config.risk.max_position_qty,
+                )
+                resulting_side = "short"
+                entry_risk_plan = strategy.build_entry_risk_plan(latest, resulting_side, config.risk)
+                if build_exit_levels_from_entry_plan(
+                    entry_price=latest_close,
+                    position_side=resulting_side,
+                    stop_loss_pct=config.risk.stop_loss_pct,
+                    take_profit_pct=config.risk.take_profit_pct,
+                    entry_risk_plan=entry_risk_plan,
+                ) is None:
+                    print("Forced SELL skipped because the strategy could not build valid exit levels.")
+                    log_decision_for_cycle(
+                        "HOLD",
+                        "invalid_entry_risk_plan"
+                        if entry_risk_plan is None or not entry_risk_plan.get("rejection_reason")
+                        else str(entry_risk_plan["rejection_reason"]),
+                        market_open=True,
+                    )
+                    return
+            else:
+                qty = position_qty
+                resulting_side = "flat"
+                entry_risk_plan = None
+                cancel_stop_orders_if_needed(trading_client, symbol)
+
             decision_id = log_decision_for_cycle("SELL", "forced_test_trade", qty=qty, market_open=True)
             submit_and_track_order(
                 trading_client=trading_client,
                 session_state=session_state,
                 symbol=symbol,
                 action="SELL",
-                side=OrderSide.SELL,
                 qty=qty,
                 event_key=latest_event_key,
                 reason="forced_test_trade",
                 decision_price=latest_close,
                 decision_id=decision_id,
+                position_side_before=position_side,
+                position_side_after=resulting_side,
                 bot_version=config.bot.version,
                 strategy_name=strategy.name,
                 strategy_version=strategy.version,
                 order_status_poll_seconds=config.execution.order_status_poll_seconds,
                 order_status_timeout_seconds=config.execution.order_status_timeout_seconds,
                 stop_loss_pct=config.risk.stop_loss_pct,
+                take_profit_pct=config.risk.take_profit_pct,
                 enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
                 serialize_value=serialize_value,
+                entry_risk_plan=entry_risk_plan,
+                signal_time=latest.name.isoformat() if hasattr(latest.name, "isoformat") else str(latest.name),
             )
             return
 
@@ -296,11 +436,12 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         event_key=latest_event_key,
         live_state=live_state,
         should_exit_position=should_exit_position,
-        stop_loss_pct=config.risk.stop_loss_pct,
-        take_profit_pct=config.risk.take_profit_pct,
+        strategy=strategy,
+        risk_settings=config.risk,
         log_decision_event=log_decision_for_cycle,
         bot_version=config.bot.version,
-        strategy_exit_reason=strategy.exit_reason(),
+        strategy_exit_reason=strategy_exit_reason,
+        position_context=position_context,
         strategy_name=strategy.name,
         strategy_version=strategy.version,
         order_status_poll_seconds=config.execution.order_status_poll_seconds,
@@ -312,7 +453,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
 
     # If no risk-based exit was needed, check whether the strategy signals
     # call for entering or exiting a position for this symbol.
-    if handle_entry_signals(
+    if handle_strategy_actions(
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
@@ -321,21 +462,22 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         buying_power=buying_power,
         live_state=live_state,
         calculate_order_qty=calculate_order_qty,
-        strategy_entry_signal=strategy.should_enter_long(latest),
-        strategy_exit_signal=strategy.should_exit_long(latest),
+        strategy=strategy,
+        latest_row=latest,
+        strategy_entry_action=strategy_entry_action,
+        strategy_exit_action=strategy_exit_action,
         strategy_entry_reason=strategy.entry_reason(),
-        strategy_exit_reason=strategy.exit_reason(),
-        risk_fraction_of_buying_power=config.risk.risk_fraction_of_buying_power,
-        max_position_qty=config.risk.max_position_qty,
+        strategy_exit_reason=strategy_exit_reason,
+        risk_settings=config.risk,
         log_decision_event=log_decision_for_cycle,
         bot_version=config.bot.version,
         strategy_name=strategy.name,
         strategy_version=strategy.version,
         order_status_poll_seconds=config.execution.order_status_poll_seconds,
         order_status_timeout_seconds=config.execution.order_status_timeout_seconds,
-        stop_loss_pct=config.risk.stop_loss_pct,
         enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
         serialize_value=serialize_value,
+        signal_time=latest.name.isoformat() if hasattr(latest.name, "isoformat") else str(latest.name),
     ):
         return
 

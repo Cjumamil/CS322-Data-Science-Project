@@ -47,11 +47,16 @@ class BotConfig:
     symbols: list[SymbolAssignment]
 
 
-def load_config(path: str = "bot_config.toml") -> BotConfig:
-    """Load the bot configuration from a TOML file."""
+def load_raw_config(path: str = "bot_config.toml") -> dict:
+    """Load the raw TOML structure from disk."""
     config_path = Path(path)
     with config_path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+        return tomllib.load(config_file)
+
+
+def load_config(path: str = "bot_config.toml") -> BotConfig:
+    """Load the bot configuration from a TOML file."""
+    raw = load_raw_config(path)
 
     bot = BotSettings(**raw["bot"])
     execution = ExecutionSettings(**raw["execution"])

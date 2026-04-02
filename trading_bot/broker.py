@@ -33,9 +33,43 @@ def _serialize_enum(value) -> str:
     return str(value).lower()
 
 
+def _safe_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _symbol_matches(order, symbol: str) -> bool:
     """Return True when the order belongs to the requested symbol."""
     return str(getattr(order, "symbol", "")).upper() == symbol.upper()
+
+
+def get_order_side(order) -> str:
+    """Return the lower-case side for an Alpaca order."""
+    return _serialize_enum(getattr(order, "side", ""))
+
+
+def get_position_side(position) -> str:
+    """Return `flat`, `long`, or `short` from an Alpaca position object."""
+    if position is None:
+        return "flat"
+
+    side = _serialize_enum(getattr(position, "side", ""))
+    if side in {"long", "short"}:
+        return side
+
+    qty = _safe_float(getattr(position, "qty", 0))
+    if qty < 0:
+        return "short"
+    if qty > 0:
+        return "long"
+    return "flat"
+
+
+def get_position_qty(position) -> int:
+    """Return the absolute share quantity for an Alpaca position."""
+    return int(abs(_safe_float(getattr(position, "qty", 0))))
 
 
 def connect_alpaca(*, paper: bool = True) -> TradingClient:
@@ -108,12 +142,19 @@ def get_working_orders(trading_client: TradingClient, symbol: str | None = None)
     ]
 
 
-def get_protective_stop_order(trading_client: TradingClient, symbol: str):
-    """Return the first open sell stop order for the symbol, if one exists."""
-    for order in get_working_orders(trading_client, symbol):
-        if _serialize_enum(getattr(order, "side", "")) != "sell":
-            continue
-        if _serialize_enum(getattr(order, "order_type", getattr(order, "type", ""))) != "stop":
+def get_stop_orders(trading_client: TradingClient, symbol: str) -> list:
+    """Return all open stop orders for the symbol."""
+    return [
+        order
+        for order in get_working_orders(trading_client, symbol)
+        if _serialize_enum(getattr(order, "order_type", getattr(order, "type", ""))) == "stop"
+    ]
+
+
+def get_protective_stop_order(trading_client: TradingClient, symbol: str, expected_side: str | None = None):
+    """Return the first matching open stop order for the symbol, if one exists."""
+    for order in get_stop_orders(trading_client, symbol):
+        if expected_side is not None and get_order_side(order) != expected_side:
             continue
         return order
     return None

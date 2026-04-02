@@ -2,26 +2,30 @@
 
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from dotenv import load_dotenv
 
 
-API_KEY = os.getenv("ALPACA_API_KEY")
-SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+load_dotenv()
+NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def _create_data_client() -> StockHistoricalDataClient:
     """Create an Alpaca market data client from environment variables."""
-    if not API_KEY or not SECRET_KEY:
+    api_key = os.getenv("ALPACA_API_KEY")
+    secret_key = os.getenv("ALPACA_SECRET_KEY")
+    if not api_key or not secret_key:
         raise ValueError(
             "Missing Alpaca credentials. Set ALPACA_API_KEY and ALPACA_SECRET_KEY as environment variables."
         )
 
-    return StockHistoricalDataClient(API_KEY, SECRET_KEY)
+    return StockHistoricalDataClient(api_key, secret_key)
 
 
 def _parse_interval(interval: str) -> TimeFrame:
@@ -69,18 +73,20 @@ def _estimate_request_start(end: datetime, interval: str, lookback_bars: int) ->
     return end - (bar_delta * lookback_bars * safety_multiplier)
 
 
-def download_data(symbol: str, interval: str, lookback_bars: int) -> pd.DataFrame:
-    """Download recent OHLCV bars from Alpaca for one symbol.
+def _normalize_request_timestamp(timestamp: datetime) -> datetime:
+    """Return a timezone-aware UTC timestamp for Alpaca requests."""
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=NEW_YORK_TIMEZONE)
+    return timestamp.astimezone(timezone.utc)
 
-    `interval` controls the bar size, while `lookback_bars` controls how
-    much recent history we pull to compute indicators like SMA-20 and SMA-50.
-    """
-    end = datetime.now(timezone.utc)
+
+def _fetch_bars(symbol: str, interval: str, start: datetime, end: datetime) -> pd.DataFrame:
+    """Fetch raw bars from Alpaca between explicit timestamps."""
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=_parse_interval(interval),
-        start=_estimate_request_start(end, interval, lookback_bars),
-        end=end,
+        start=_normalize_request_timestamp(start),
+        end=_normalize_request_timestamp(end),
         # IEX is Alpaca's free stock feed. It is good enough for paper
         # testing here, but it can differ from broader consolidated feeds.
         feed=DataFeed.IEX,
@@ -109,7 +115,39 @@ def download_data(symbol: str, interval: str, lookback_bars: int) -> pd.DataFram
     )
 
     cleaned = df[["Open", "High", "Low", "Close", "Volume"]].dropna().copy()
+    return cleaned
+
+
+def download_data(symbol: str, interval: str, lookback_bars: int) -> pd.DataFrame:
+    """Download recent OHLCV bars from Alpaca for one symbol.
+
+    `interval` controls the bar size, while `lookback_bars` controls how
+    much recent history we pull to compute indicators like SMA-20 and SMA-50.
+    """
+    end = datetime.now(timezone.utc)
+    cleaned = _fetch_bars(
+        symbol,
+        interval,
+        _estimate_request_start(end, interval, lookback_bars),
+        end,
+    )
     if len(cleaned) > lookback_bars:
         cleaned = cleaned.tail(lookback_bars).copy()
 
     return cleaned
+
+
+def download_data_range(
+    symbol: str,
+    interval: str,
+    start: datetime,
+    end: datetime,
+    *,
+    warmup_bars: int = 0,
+) -> pd.DataFrame:
+    """Download OHLCV bars for a specific historical range plus optional warmup."""
+    request_start = start
+    if warmup_bars > 0:
+        request_start = start - (_interval_to_timedelta(interval) * warmup_bars * 12)
+
+    return _fetch_bars(symbol, interval, request_start, end)
