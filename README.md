@@ -95,6 +95,8 @@ The current `macd_pullback` implementation is built around:
 * EMA-band-based stop placement with a `1.5R` target
 * optional strategy exits that can be toggled on later for experiments
 
+Recent NVDA backtest sweeps suggest a better exploratory baseline than the original `EMA200` setup: `ema_band_window=72`, `require_pullback_breakout=true`, and `pullback_breakout_lookback=3`. This is currently treated as a research baseline for further chart review and exit tuning rather than a finalized production setting.
+
 #### 4. Run the bot
 
 From the project root directory:
@@ -113,6 +115,30 @@ python -m trading_bot.backtest --symbol MSFT --strategy macd_pullback --start 20
 
 This saves artifacts under local `backtests/` by default, with each run stored in its own timestamped folder containing a trade CSV, summary JSON, a broad overview chart, and per-trade zoom charts.
 
+You can also override individual strategy settings from the CLI without editing `bot_config.toml`:
+
+```bash
+python -m trading_bot.backtest --symbol NVDA --strategy macd_pullback --start 2025-03-31 --end 2026-03-31 --strategy-param ema_band_window=100 --strategy-param require_pullback_breakout=true
+```
+
+For one-parameter experiments, use the built-in sweep mode. It runs one batch of backtests with the same fixed settings, varies the chosen parameter across the provided values, saves the normal artifacts for each variant, and writes a comparison CSV plus JSON summary in one sweep folder:
+
+```bash
+python -m trading_bot.backtest --symbol NVDA --strategy macd_pullback --start 2025-03-31 --end 2026-03-31 --sweep-param ema_band_window --sweep-values 50,72,100,200
+```
+
+One useful follow-up pattern is to lock a promising baseline with `--strategy-param` and then sweep one additional filter:
+
+```bash
+python -m trading_bot.backtest --symbol NVDA --strategy macd_pullback --start 2025-03-31 --end 2026-03-31 --strategy-param ema_band_window=72 --strategy-param require_pullback_breakout=true --sweep-param pullback_breakout_lookback --sweep-values 3,5,8,10
+```
+
+You can combine fixed overrides with a sweep as long as the swept parameter itself is not also overridden:
+
+```bash
+python -m trading_bot.backtest --symbol NVDA --strategy macd_pullback --start 2025-03-31 --end 2026-03-31 --strategy-param require_pullback_breakout=true --sweep-param ema_band_window --sweep-values 50,72,100,200
+```
+
 To save a run under the team-shared folder intended for Git commits, add `--shared`:
 
 ```bash
@@ -123,6 +149,7 @@ Example run folder name:
 
 * `backtests/2026-04-02_00-40-22_ALB_macd_pullback_2025-03-31_to_2026-03-31/`
 * `shared_backtests/2026-04-02_00-40-22_ALB_macd_pullback_2025-03-31_to_2026-03-31/`
+* `backtests/2026-04-06_22-10-00_NVDA_macd_pullback_2025-03-31_to_2026-03-31_sweep_ema_band_window/`
 
 ---
 

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 from trading_bot.config import RiskSettings, load_config, load_raw_config
@@ -17,6 +19,7 @@ from trading_bot.risk import (
     build_exit_levels_from_entry_plan,
     calculate_order_qty,
     exit_action_for_position_side,
+    is_within_flatten_before_close_window,
 )
 from trading_bot.strategies.base import PositionContext
 from trading_bot.strategies import create_strategy, default_strategy_config, list_supported_strategies
@@ -77,6 +80,24 @@ class TradeRecord:
     macd_failure_triggered: bool
 
 
+@dataclass(frozen=True)
+class BacktestArtifacts:
+    run_root: Path
+    trades_csv_path: Path
+    summary_json_path: Path
+    chart_path: Path | None
+    summary: dict
+
+
+@dataclass(frozen=True)
+class SweepVariant:
+    label: str
+    slug: str
+    strategy_config: dict
+    sweep_param: str | None = None
+    sweep_value: object | None = None
+
+
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for offline backtests."""
     parser = argparse.ArgumentParser(description="Run an offline historical backtest.")
@@ -114,7 +135,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print supported strategies and exit.",
     )
+    parser.add_argument(
+        "--strategy-param",
+        action="append",
+        default=[],
+        help="Override one resolved strategy config field with KEY=VALUE. Repeat to set multiple values.",
+    )
+    parser.add_argument(
+        "--sweep-param",
+        help="Strategy config field to vary across a multi-run sweep, for example ema_band_window.",
+    )
+    parser.add_argument(
+        "--sweep-values",
+        help="Comma-separated values for --sweep-param, for example 50,72,100,200.",
+    )
     args = parser.parse_args()
+    if bool(args.sweep_param) != bool(args.sweep_values):
+        parser.error("--sweep-param and --sweep-values must be provided together.")
     if not args.list_strategies:
         missing = [
             name
@@ -133,6 +170,109 @@ def resolve_output_dir(args: argparse.Namespace) -> str:
     if args.shared:
         return SHARED_BACKTEST_OUTPUT_DIR
     return LOCAL_BACKTEST_OUTPUT_DIR
+
+
+def parse_key_value_argument(raw_argument: str) -> tuple[str, str]:
+    """Parse one KEY=VALUE CLI argument."""
+    if "=" not in raw_argument:
+        raise ValueError(f"Expected KEY=VALUE format, got: {raw_argument}")
+    key, value = raw_argument.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        raise ValueError(f"Expected a non-empty key in KEY=VALUE argument: {raw_argument}")
+    return key, value
+
+
+def parse_bool_text(raw_value: str) -> bool:
+    """Parse a flexible boolean CLI value."""
+    text = raw_value.strip().lower()
+    if text in {"true", "1", "yes", "y", "on"}:
+        return True
+    if text in {"false", "0", "no", "n", "off"}:
+        return False
+    raise ValueError(f"Could not parse boolean value: {raw_value}")
+
+
+def coerce_cli_value(raw_value: str, reference_value) -> object:
+    """Convert one CLI override to the same basic type as the existing config value."""
+    if reference_value is None:
+        text = raw_value.strip()
+        lower_text = text.lower()
+        if lower_text in {"none", "null"}:
+            return None
+        if lower_text in {"true", "false", "1", "0", "yes", "no", "y", "n", "on", "off"}:
+            return parse_bool_text(text)
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            return float(text)
+        except ValueError:
+            return text
+    if isinstance(reference_value, bool):
+        return parse_bool_text(raw_value)
+    if isinstance(reference_value, int):
+        return int(raw_value)
+    if isinstance(reference_value, float):
+        return float(raw_value)
+    return raw_value
+
+
+def apply_strategy_overrides(strategy_config: dict, overrides: dict[str, object]) -> dict:
+    """Return a strategy config with validated CLI overrides applied."""
+    updated = dict(strategy_config)
+    for key, value in overrides.items():
+        if key not in updated:
+            raise ValueError(
+                f"Unknown strategy parameter override: {key}. "
+                f"Available keys: {', '.join(sorted(updated))}"
+            )
+        updated[key] = value
+    return updated
+
+
+def parse_strategy_param_overrides(raw_arguments: list[str], strategy_config: dict) -> dict[str, object]:
+    """Parse repeatable strategy override arguments against one resolved config."""
+    overrides: dict[str, object] = {}
+    for raw_argument in raw_arguments:
+        key, raw_value = parse_key_value_argument(raw_argument)
+        if key not in strategy_config:
+            raise ValueError(
+                f"Unknown strategy parameter override: {key}. "
+                f"Available keys: {', '.join(sorted(strategy_config))}"
+            )
+        overrides[key] = coerce_cli_value(raw_value, strategy_config[key])
+    return overrides
+
+
+def parse_sweep_values(raw_values: str, *, sweep_param: str, strategy_config: dict) -> list[object]:
+    """Parse one comma-separated sweep value list against the resolved config type."""
+    if sweep_param not in strategy_config:
+        raise ValueError(
+            f"Unknown sweep parameter: {sweep_param}. "
+            f"Available keys: {', '.join(sorted(strategy_config))}"
+        )
+    values = [value.strip() for value in raw_values.split(",") if value.strip()]
+    if not values:
+        raise ValueError("At least one sweep value is required.")
+    return [coerce_cli_value(value, strategy_config[sweep_param]) for value in values]
+
+
+def make_slug_component(value: object) -> str:
+    """Convert a value into a filesystem-safe slug fragment."""
+    text = str(value).strip()
+    if not text:
+        return "empty"
+    safe = (
+        text.replace(":", "-")
+        .replace(" ", "_")
+        .replace("/", "-")
+        .replace("\\", "-")
+        .replace("=", "-")
+    )
+    return safe
 
 
 def parse_window_timestamp(value: str, *, is_end: bool) -> datetime:
@@ -337,9 +477,27 @@ def simulate_backtest(
     for bar_number, (timestamp, row) in enumerate(analysis_df.iterrows(), start=1):
         bar_open = float(row["Open"])
         bar_close = float(row["Close"])
+        flatten_window_active = is_within_flatten_before_close_window(
+            timestamp,
+            flatten_before_close=risk_settings.flatten_before_close,
+            flatten_minutes_before_close=risk_settings.flatten_minutes_before_close,
+        )
 
         if pending_order is not None:
             if position is None and pending_order.action in {"BUY", "SELL"}:
+                if flatten_window_active:
+                    pending_order = None
+                    equity_points.append(
+                        {
+                            "timestamp": format_timestamp(timestamp),
+                            "equity": round(realized_equity, 4),
+                            "realized_equity": round(realized_equity, 4),
+                            "position_side": "flat",
+                            "position_qty": 0,
+                            "close": round(bar_close, 4),
+                        }
+                    )
+                    continue
                 qty = calculate_order_qty(
                     bar_open,
                     realized_equity,
@@ -431,6 +589,22 @@ def simulate_backtest(
                 realized_equity += closed_trade.pnl
                 position = None
 
+        if position is not None and flatten_window_active:
+            closed_trade = close_position(
+                trade_number=len(trades) + 1,
+                position=position,
+                exit_time=timestamp,
+                exit_price=bar_close,
+                exit_reason="flatten_before_close",
+                strategy_name=strategy.name,
+                interval=strategy.interval,
+                symbol=symbol,
+                current_bar_number=bar_number,
+            )
+            trades.append(closed_trade)
+            realized_equity += closed_trade.pnl
+            position = None
+
         equity_points.append(
             {
                 "timestamp": format_timestamp(timestamp),
@@ -456,6 +630,8 @@ def simulate_backtest(
                     signal_time=timestamp,
                 )
         else:
+            if flatten_window_active:
+                continue
             entry_action = strategy.entry_action(row)
             if entry_action in {"BUY", "SELL"}:
                 pending_order = PendingOrder(
@@ -636,6 +812,8 @@ def build_backtest_summary(
             "risk_fraction_of_buying_power": risk_settings.risk_fraction_of_buying_power,
             "stop_loss_pct": risk_settings.stop_loss_pct,
             "take_profit_pct": risk_settings.take_profit_pct,
+            "flatten_before_close": risk_settings.flatten_before_close,
+            "flatten_minutes_before_close": risk_settings.flatten_minutes_before_close,
         },
         "run_arguments": run_arguments,
     }
@@ -696,17 +874,55 @@ def _aligned_timestamp_for_index(raw_timestamp, index: pd.Index) -> pd.Timestamp
     return timestamp.tz_convert(index.tz)
 
 
+def interval_to_minutes(interval: str) -> int:
+    """Convert a standard interval string like 1m, 5m, 1h, or 1d into minutes."""
+    text = str(interval).strip().lower()
+    if not text:
+        raise ValueError("Interval cannot be blank.")
+
+    unit = text[-1]
+    value = int(text[:-1])
+    if value <= 0:
+        raise ValueError(f"Interval must be positive, got: {interval}")
+
+    if unit == "m":
+        return value
+    if unit == "h":
+        return value * 60
+    if unit == "d":
+        return value * 1440
+    raise ValueError(f"Unsupported interval format for chart scaling: {interval}")
+
+
+def trade_chart_padding_bars(*, interval: str, bars_held: int) -> tuple[int, int]:
+    """Choose zoom-chart context bars that scale with both interval and trade length."""
+    interval_minutes = interval_to_minutes(interval)
+
+    # Preserve roughly the old 5m visual context: ~2 hours before entry and
+    # ~80 minutes after exit, while never shrinking below a 24/16-bar window.
+    # That means 5m and slower charts clamp at the same minimum context.
+    base_before_bars = max(24, math.ceil(120 / interval_minutes))
+    base_after_bars = max(16, math.ceil(80 / interval_minutes))
+
+    held = max(1, int(bars_held))
+    dynamic_before_bars = max(6, math.ceil(held * 0.75))
+    dynamic_after_bars = max(4, math.ceil(held * 0.5))
+
+    return (
+        max(base_before_bars, dynamic_before_bars),
+        max(base_after_bars, dynamic_after_bars),
+    )
+
+
 def plot_trade_zoom_charts(
     *,
     prepared_df: pd.DataFrame,
     trades_df: pd.DataFrame,
     output_dir: Path,
-    bars_before_entry: int = 24,
-    bars_after_exit: int = 16,
+    interval: str,
 ) -> list[Path]:
     """Save one zoomed candlestick + MACD chart per completed trade."""
     try:
-        import matplotlib.dates as mdates
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
     except ImportError:
@@ -719,20 +935,82 @@ def plot_trade_zoom_charts(
     output_dir.mkdir(parents=True, exist_ok=True)
     saved_paths: list[Path] = []
 
-    def draw_candlesticks(ax, window_df: pd.DataFrame) -> None:
-        x_values = mdates.date2num(window_df.index.to_pydatetime())
-        if len(x_values) > 1:
-            width = float(pd.Series(x_values).diff().dropna().median()) * 0.82
-        else:
-            width = 1 / (24 * 60)
+    def eastern_index(index: pd.Index) -> pd.DatetimeIndex:
+        """Return the chart index converted to New York time for labeling/session shading."""
+        eastern = pd.DatetimeIndex(index)
+        if eastern.tz is None:
+            eastern = eastern.tz_localize("UTC")
+        return eastern.tz_convert(NEW_YORK_TIMEZONE)
 
+    def shade_session_phases(ax, phase_labels: list[str]) -> None:
+        """Highlight extended-hours and overnight regions with different blue tints."""
+        start = None
+        active_phase = None
+        phase_colors = {
+            "extended": "#1b2350",
+            "overnight": "#27346b",
+        }
+        phase_alpha = {
+            "extended": 0.26,
+            "overnight": 0.36,
+        }
+        for idx, phase in enumerate(phase_labels):
+            if phase == "regular":
+                if start is not None and active_phase is not None:
+                    ax.axvspan(
+                        start - 0.5,
+                        idx - 0.5,
+                        color=phase_colors[active_phase],
+                        alpha=phase_alpha[active_phase],
+                        zorder=0,
+                    )
+                    start = None
+                    active_phase = None
+                continue
+
+            if start is None:
+                start = idx
+                active_phase = phase
+                continue
+
+            if phase != active_phase:
+                ax.axvspan(
+                    start - 0.5,
+                    idx - 0.5,
+                    color=phase_colors[active_phase],
+                    alpha=phase_alpha[active_phase],
+                    zorder=0,
+                )
+                start = idx
+                active_phase = phase
+
+        if start is not None and active_phase is not None:
+            ax.axvspan(
+                start - 0.5,
+                len(phase_labels) - 0.5,
+                color=phase_colors[active_phase],
+                alpha=phase_alpha[active_phase],
+                zorder=0,
+            )
+
+    def draw_day_boundaries(ax, local_index: pd.DatetimeIndex) -> None:
+        """Add subtle vertical separators when the Eastern trading date changes."""
+        if len(local_index) < 2:
+            return
+        local_dates = local_index.date
+        for idx in range(1, len(local_dates)):
+            if local_dates[idx] != local_dates[idx - 1]:
+                ax.axvline(idx - 0.5, color="#89a4da", linewidth=1.35, alpha=0.75, zorder=1)
+
+    def draw_candlesticks(ax, window_df: pd.DataFrame, x_values: list[int]) -> None:
+        width = 0.82
         for x_value, (_, row) in zip(x_values, window_df.iterrows()):
             open_price = float(row["Open"])
             close_price = float(row["Close"])
             high_price = float(row["High"])
             low_price = float(row["Low"])
-            candle_color = "#2ca02c" if close_price >= open_price else "#d62728"
-            ax.vlines(x_value, low_price, high_price, color=candle_color, linewidth=1.6, alpha=0.98)
+            candle_color = "#19d3a2" if close_price >= open_price else "#ff4d6d"
+            ax.vlines(x_value, low_price, high_price, color=candle_color, linewidth=1.6, alpha=0.98, zorder=2)
             body_bottom = min(open_price, close_price)
             body_height = max(abs(close_price - open_price), 0.02)
             ax.add_patch(
@@ -744,6 +1022,7 @@ def plot_trade_zoom_charts(
                     edgecolor=candle_color,
                     linewidth=1.0,
                     alpha=0.9,
+                    zorder=3,
                 )
             )
 
@@ -752,6 +1031,10 @@ def plot_trade_zoom_charts(
         exit_time = _aligned_timestamp_for_index(trade["exit_time"], prepared_df.index)
         entry_signal_time = _aligned_timestamp_for_index(trade["entry_signal_time"], prepared_df.index)
         trade_id = str(trade.get("trade_id", f"T{trade_number:03d}"))
+        bars_before_entry, bars_after_exit = trade_chart_padding_bars(
+            interval=interval,
+            bars_held=int(trade.get("bars_held", 1)),
+        )
 
         entry_loc = int(prepared_df.index.searchsorted(entry_time, side="left"))
         exit_loc = int(prepared_df.index.searchsorted(exit_time, side="left"))
@@ -762,64 +1045,106 @@ def plot_trade_zoom_charts(
         window_df = prepared_df.iloc[start_loc:end_loc].copy()
         if window_df.empty:
             continue
+        x_positions = list(range(len(window_df)))
+        local_index = eastern_index(window_df.index)
+        minutes_of_day = (local_index.hour * 60) + local_index.minute
+        phase_labels = []
+        for minute in minutes_of_day:
+            if (minute >= ((9 * 60) + 30)) and (minute < (16 * 60)):
+                phase_labels.append("regular")
+            elif ((minute >= (4 * 60)) and (minute < ((9 * 60) + 30))) or ((minute >= (16 * 60)) and (minute < (20 * 60))):
+                phase_labels.append("extended")
+            else:
+                phase_labels.append("overnight")
+        signal_x = max(0, min(len(window_df) - 1, int(window_df.index.searchsorted(entry_signal_time, side="left"))))
+        entry_x = max(0, min(len(window_df) - 1, int(window_df.index.searchsorted(entry_time, side="left"))))
+        exit_x = max(0, min(len(window_df) - 1, int(window_df.index.searchsorted(exit_time, side="left"))))
 
         fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True, height_ratios=[3, 2])
         price_ax, macd_ax = axes
-        fig.patch.set_facecolor("#121417")
+        fig.patch.set_facecolor("#0c1324")
         for axis in axes:
-            axis.set_facecolor("#171b21")
+            axis.set_facecolor("#111a2e")
             axis.tick_params(colors="#d8dee9")
             for spine in axis.spines.values():
-                spine.set_color("#5f6b7a")
+                spine.set_color("#4a5d82")
+        shade_session_phases(price_ax, phase_labels)
+        shade_session_phases(macd_ax, phase_labels)
+        draw_day_boundaries(price_ax, local_index)
+        draw_day_boundaries(macd_ax, local_index)
 
-        draw_candlesticks(price_ax, window_df)
+        draw_candlesticks(price_ax, window_df, x_positions)
         if "EMA12" in window_df.columns:
-            price_ax.plot(window_df.index, window_df["EMA12"], label="EMA12", linewidth=1.1, color="#5dade2")
+            price_ax.plot(x_positions, window_df["EMA12"], label="EMA12", linewidth=1.1, color="#5dade2", zorder=4)
         if "EMA26" in window_df.columns:
-            price_ax.plot(window_df.index, window_df["EMA26"], label="EMA26", linewidth=1.1, color="#f5b041")
+            price_ax.plot(x_positions, window_df["EMA26"], label="EMA26", linewidth=1.1, color="#f5b041", zorder=4)
         if "EMA200_high" in window_df.columns:
-            price_ax.plot(window_df.index, window_df["EMA200_high"], label="EMA200 high", linewidth=1.0, color="#ec7063")
+            price_ax.plot(x_positions, window_df["EMA200_high"], label="EMA200 high", linewidth=1.0, color="#ec7063", zorder=4)
         if "EMA200_close" in window_df.columns:
-            price_ax.plot(window_df.index, window_df["EMA200_close"], label="EMA200 close", linewidth=1.0, color="#bb8fce")
+            price_ax.plot(x_positions, window_df["EMA200_close"], label="EMA200 close", linewidth=1.0, color="#bb8fce", zorder=4)
         if "EMA200_low" in window_df.columns:
-            price_ax.plot(window_df.index, window_df["EMA200_low"], label="EMA200 low", linewidth=1.0, color="#48c9b0")
+            price_ax.plot(x_positions, window_df["EMA200_low"], label="EMA200 low", linewidth=1.0, color="#48c9b0", zorder=4)
 
-        price_ax.scatter(entry_signal_time, float(trade["entry_price"]), marker="o", s=55, facecolors="none", edgecolors="#f8f9f9", label="Signal")
-        price_ax.scatter(entry_time, float(trade["entry_price"]), marker="^" if trade["side"] == "long" else "v", s=70, color="#2ecc71" if trade["side"] == "long" else "#e74c3c", label="Entry")
-        price_ax.scatter(exit_time, float(trade["exit_price"]), marker="x", s=70, color="#f8f9f9", label="Exit")
-        price_ax.axhline(float(trade["stop_price"]), color="#e74c3c", linestyle="--", linewidth=1.0, alpha=0.8, label="Stop")
-        price_ax.axhline(float(trade["take_profit_price"]), color="#2ecc71", linestyle="--", linewidth=1.0, alpha=0.8, label="Target")
+        price_ax.axhline(float(trade["stop_price"]), color="#ff6b6b", linestyle="--", linewidth=1.0, alpha=0.8, label="Stop", zorder=1)
+        price_ax.axhline(float(trade["take_profit_price"]), color="#19d3a2", linestyle="--", linewidth=1.0, alpha=0.8, label="Target", zorder=1)
+        price_ax.scatter(signal_x, float(trade["entry_price"]), marker="o", s=65, facecolors="none", edgecolors="#f8f9f9", linewidths=1.8, label="Signal", zorder=8)
+        price_ax.scatter(
+            entry_x,
+            float(trade["entry_price"]),
+            marker="D",
+            s=96,
+            color="#ffd166",
+            edgecolors="#171b21",
+            linewidths=1.2,
+            label="Entry",
+            zorder=9,
+        )
+        price_ax.scatter(exit_x, float(trade["exit_price"]), marker="x", s=110, color="#f8f9f9", linewidths=2.2, label="Exit", zorder=10)
         price_ax.set_ylabel("Price", color="#d8dee9")
         price_ax.set_title(
-            f"{trade['symbol']} | {trade_id} | {trade['side']} | {trade['exit_reason']} | bars held {trade['bars_held']}"
+            f"{trade['symbol']} | {trade_id} | {trade['side']} | {trade.get('interval', interval)} | {trade['exit_reason']} | bars held {trade['bars_held']}"
             ,
             color="#f5f7fa",
         )
-        price_ax.grid(alpha=0.25, color="#5f6b7a")
+        price_ax.grid(alpha=0.25, color="#31415f")
         price_legend = price_ax.legend(loc="upper left", ncol=3)
-        price_legend.get_frame().set_facecolor("#171b21")
-        price_legend.get_frame().set_edgecolor("#5f6b7a")
+        price_legend.get_frame().set_facecolor("#111a2e")
+        price_legend.get_frame().set_edgecolor("#4a5d82")
         for text in price_legend.get_texts():
             text.set_color("#f5f7fa")
 
-        macd_ax.plot(window_df.index, window_df["MACD"], label="MACD", linewidth=1.0, color="#5dade2")
-        macd_ax.plot(window_df.index, window_df["signal_line"], label="Signal", linewidth=1.0, color="#f5b041")
-        bar_colors = ["#2ca02c" if value >= 0 else "#d62728" for value in window_df["histogram"].fillna(0)]
-        macd_ax.bar(window_df.index, window_df["histogram"], label="Histogram", alpha=0.4, width=0.01, color=bar_colors)
+        macd_ax.plot(x_positions, window_df["MACD"], label="MACD", linewidth=1.0, color="#5dade2")
+        macd_ax.plot(x_positions, window_df["signal_line"], label="Signal", linewidth=1.0, color="#f5b041")
+        histogram_values = window_df["histogram"].fillna(0)
+        histogram_previous = histogram_values.shift(1).fillna(0)
+        bar_colors = []
+        for current_value, previous_value in zip(histogram_values, histogram_previous):
+            if current_value >= 0:
+                bar_colors.append("#26c6b5" if current_value >= previous_value else "#a9e5de")
+            else:
+                bar_colors.append("#ff5c6c" if current_value <= previous_value else "#f6c2cd")
+        macd_ax.bar(x_positions, window_df["histogram"], label="Histogram", alpha=0.8, width=0.82, color=bar_colors)
         macd_ax.axhline(0, color="#f8f9f9", linewidth=0.8, alpha=0.6)
         macd_ax.set_ylabel("MACD", color="#d8dee9")
-        macd_ax.set_xlabel("Time", color="#d8dee9")
-        macd_ax.grid(alpha=0.25, color="#5f6b7a")
+        macd_ax.set_xlabel("Time (EST/EDT)", color="#d8dee9")
+        macd_ax.grid(alpha=0.25, color="#31415f")
         macd_legend = macd_ax.legend(loc="upper left")
-        macd_legend.get_frame().set_facecolor("#171b21")
-        macd_legend.get_frame().set_edgecolor("#5f6b7a")
+        macd_legend.get_frame().set_facecolor("#111a2e")
+        macd_legend.get_frame().set_edgecolor("#4a5d82")
         for text in macd_legend.get_texts():
             text.set_color("#f5f7fa")
 
-        locator = mdates.AutoDateLocator()
-        formatter = mdates.ConciseDateFormatter(locator)
-        macd_ax.xaxis.set_major_locator(locator)
-        macd_ax.xaxis.set_major_formatter(formatter)
+        if len(window_df) > 1:
+            tick_count = min(6, len(window_df))
+            tick_positions = sorted(set(int(round(i)) for i in np.linspace(0, len(window_df) - 1, tick_count)))
+        else:
+            tick_positions = [0]
+        tick_labels = []
+        for position in tick_positions:
+            timestamp = local_index[int(position)]
+            tick_labels.append(pd.Timestamp(timestamp).strftime("%m-%d %H:%M"))
+        macd_ax.set_xticks(tick_positions)
+        macd_ax.set_xticklabels(tick_labels, rotation=0, color="#d8dee9")
 
         fig.tight_layout()
         signed_return_pct = float(trade["return_pct"])
@@ -954,38 +1279,109 @@ def build_output_paths(output_dir: str, slug: str, run_timestamp: str) -> tuple[
     )
 
 
-def run_backtest(args: argparse.Namespace) -> None:
-    """Run one offline backtest from CLI arguments."""
-    if args.list_strategies:
-        print("\n".join(list_supported_strategies()))
-        return
+def build_common_run_arguments(
+    args: argparse.Namespace,
+    *,
+    resolved_output_dir: str,
+    strategy_overrides: dict[str, object],
+) -> dict:
+    """Build the stable run-arguments payload shared by single runs and sweeps."""
+    return {
+        "symbol": args.symbol.upper(),
+        "strategy": args.strategy,
+        "strategy_requested": args.strategy,
+        "config_path": str(args.config),
+        "start": args.start,
+        "end": args.end,
+        "interval_override": args.interval,
+        "initial_equity": args.initial_equity,
+        "output_dir": resolved_output_dir,
+        "shared_run": bool(args.shared),
+        "chart_enabled": not args.no_chart,
+        "strategy_param_overrides": strategy_overrides,
+        "sweep_param": args.sweep_param,
+        "sweep_values": args.sweep_values,
+    }
 
-    from trading_bot.data import download_data_range
 
-    raw_config = load_raw_config(args.config)
-    config = load_config(args.config)
-    strategy_config = resolve_strategy_config(raw_config, args.symbol, args.strategy, args.interval)
-    strategy = create_strategy(strategy_config)
+def build_sweep_root(
+    output_dir: str,
+    *,
+    symbol: str,
+    strategy_name: str,
+    start_arg: str,
+    end_arg: str,
+    sweep_param: str,
+    run_timestamp: str,
+) -> Path:
+    """Create and return the parent output folder for a multi-run sweep."""
+    base_slug = make_run_slug(symbol, strategy_name, start_arg, end_arg)
+    root = Path(output_dir) / f"{run_timestamp}_{base_slug}_sweep_{make_slug_component(sweep_param)}"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
-    analysis_start_local = parse_window_timestamp(args.start, is_end=False)
-    analysis_end_local = parse_window_timestamp(args.end, is_end=True)
-    if analysis_end_local <= analysis_start_local:
-        raise ValueError("Backtest end must be after start.")
 
-    analysis_start_utc = to_utc(analysis_start_local)
-    analysis_end_utc = to_utc(analysis_end_local)
-    resolved_output_dir = resolve_output_dir(args)
+def build_sweep_variants(
+    args: argparse.Namespace,
+    *,
+    base_strategy_config: dict,
+) -> tuple[dict[str, object], list[SweepVariant]]:
+    """Resolve shared overrides plus one list of sweep variants."""
+    common_overrides = parse_strategy_param_overrides(args.strategy_param, base_strategy_config)
+    if args.sweep_param and args.sweep_param in common_overrides:
+        raise ValueError(
+            f"Sweep parameter {args.sweep_param} cannot also be set in --strategy-param overrides."
+        )
 
-    raw_df = download_data_range(
-        args.symbol.upper(),
-        strategy.interval,
-        analysis_start_utc,
-        analysis_end_utc,
-        warmup_bars=strategy.lookback_bars,
+    fixed_strategy_config = apply_strategy_overrides(base_strategy_config, common_overrides)
+    if not args.sweep_param:
+        return common_overrides, [
+            SweepVariant(
+                label="default",
+                slug="default",
+                strategy_config=fixed_strategy_config,
+            )
+        ]
+
+    sweep_values = parse_sweep_values(
+        args.sweep_values,
+        sweep_param=args.sweep_param,
+        strategy_config=fixed_strategy_config,
     )
-    if raw_df.empty:
-        raise ValueError("Alpaca returned no bars for the requested historical window.")
+    variants = []
+    for sweep_value in sweep_values:
+        variants.append(
+            SweepVariant(
+                label=f"{args.sweep_param}={sweep_value}",
+                slug=f"{make_slug_component(args.sweep_param)}_{make_slug_component(sweep_value)}",
+                strategy_config=apply_strategy_overrides(
+                    fixed_strategy_config,
+                    {args.sweep_param: sweep_value},
+                ),
+                sweep_param=args.sweep_param,
+                sweep_value=sweep_value,
+            )
+        )
+    return common_overrides, variants
 
+
+def save_backtest_run(
+    *,
+    args: argparse.Namespace,
+    config: object,
+    strategy_config: dict,
+    raw_df: pd.DataFrame,
+    analysis_start_utc: datetime,
+    analysis_end_utc: datetime,
+    resolved_output_dir: str,
+    strategy_overrides: dict[str, object],
+    run_timestamp: str | None = None,
+    slug_suffix: str | None = None,
+    summary_metadata: dict | None = None,
+    print_terminal_summary: bool = True,
+) -> BacktestArtifacts:
+    """Execute one backtest variant and save the normal run artifacts."""
+    strategy = create_strategy(strategy_config)
     prepared_df = strategy.prepare_dataframe(raw_df)
     trades_df, equity_df, summary = simulate_backtest(
         symbol=args.symbol.upper(),
@@ -996,29 +1392,29 @@ def run_backtest(args: argparse.Namespace) -> None:
         risk_settings=config.risk,
         initial_equity=args.initial_equity,
     )
-    summary["run_arguments"] = {
-        "symbol": args.symbol.upper(),
-        "strategy": strategy.name,
-        "strategy_requested": args.strategy,
-        "config_path": str(args.config),
-        "start": args.start,
-        "end": args.end,
-        "interval_override": args.interval,
-        "resolved_interval": strategy.interval,
-        "initial_equity": args.initial_equity,
-        "output_dir": resolved_output_dir,
-        "shared_run": bool(args.shared),
-        "chart_enabled": not args.no_chart,
-    }
+
+    run_arguments = build_common_run_arguments(
+        args,
+        resolved_output_dir=resolved_output_dir,
+        strategy_overrides=strategy_overrides,
+    )
+    run_arguments["strategy"] = strategy.name
+    run_arguments["resolved_interval"] = strategy.interval
+    summary["run_arguments"] = run_arguments
     summary["resolved_strategy_config"] = strategy_config
+    if summary_metadata:
+        summary.update(summary_metadata)
 
     slug = make_run_slug(args.symbol.upper(), strategy.name, args.start, args.end)
-    run_timestamp = make_run_timestamp()
+    if slug_suffix:
+        slug = f"{slug}_{slug_suffix}"
+    resolved_run_timestamp = run_timestamp or make_run_timestamp()
     run_root, trades_csv_path, summary_json_path, chart_path = build_output_paths(
         resolved_output_dir,
         slug,
-        run_timestamp,
+        resolved_run_timestamp,
     )
+
     trades_df.to_csv(trades_csv_path, index=False)
 
     saved_chart_path = None
@@ -1037,13 +1433,241 @@ def run_backtest(args: argparse.Namespace) -> None:
             prepared_df=prepared_df,
             trades_df=trades_df,
             output_dir=run_root / "trade_charts",
+            interval=strategy.interval,
         )
 
     summary["trade_chart_count"] = len(saved_trade_chart_paths)
-    summary["trade_chart_dir"] = None if not saved_trade_chart_paths else str((run_root / "trade_charts"))
+    summary["trade_chart_dir"] = None if not saved_trade_chart_paths else str(run_root / "trade_charts")
     summary_json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    print_summary(summary, trades_csv_path=trades_csv_path, summary_json_path=summary_json_path, chart_path=saved_chart_path)
+    if print_terminal_summary:
+        print_summary(summary, trades_csv_path=trades_csv_path, summary_json_path=summary_json_path, chart_path=saved_chart_path)
+
+    return BacktestArtifacts(
+        run_root=run_root,
+        trades_csv_path=trades_csv_path,
+        summary_json_path=summary_json_path,
+        chart_path=saved_chart_path,
+        summary=summary,
+    )
+
+
+def build_sweep_comparison_row(variant: SweepVariant, artifacts: BacktestArtifacts) -> dict:
+    """Flatten one run into a compact comparison row."""
+    summary = artifacts.summary
+    return {
+        "variant_label": variant.label,
+        "sweep_param": variant.sweep_param,
+        "sweep_value": variant.sweep_value,
+        "trade_count": summary["trade_count"],
+        "long_trade_count": summary["long_trade_count"],
+        "short_trade_count": summary["short_trade_count"],
+        "win_rate_pct": summary["win_rate_pct"],
+        "profit_factor": summary["profit_factor"],
+        "total_return_pct": summary["total_return_pct"],
+        "max_drawdown_pct": summary["max_drawdown_pct"],
+        "ending_equity": summary["ending_equity"],
+        "average_trade_return_pct": summary["average_trade_return_pct"],
+        "best_trade_return_pct": summary["best_trade_return_pct"],
+        "worst_trade_return_pct": summary["worst_trade_return_pct"],
+        "time_stop_count": summary["strategy_exit_counts"]["time_stop_count"],
+        "macd_failure_count": summary["strategy_exit_counts"]["macd_failure_count"],
+        "long_entry_signal_count": summary["strategy_context_counts"]["long_entry_signal_count"],
+        "short_entry_signal_count": summary["strategy_context_counts"]["short_entry_signal_count"],
+        "run_root": str(artifacts.run_root),
+        "trades_csv_path": str(artifacts.trades_csv_path),
+        "summary_json_path": str(artifacts.summary_json_path),
+        "chart_path": None if artifacts.chart_path is None else str(artifacts.chart_path),
+    }
+
+
+def print_sweep_summary(
+    *,
+    symbol: str,
+    strategy_name: str,
+    sweep_param: str,
+    comparison_rows: list[dict],
+    comparison_csv_path: Path,
+    comparison_json_path: Path,
+    sweep_root: Path,
+) -> None:
+    """Print a concise summary after a multi-run sweep."""
+    print(f"Sweep: {strategy_name}")
+    print(f"Symbol: {symbol}")
+    print(f"Parameter: {sweep_param}")
+    print(f"Runs: {len(comparison_rows)}")
+    print()
+    for row in comparison_rows:
+        profit_factor = "n/a" if row["profit_factor"] is None else f"{row['profit_factor']:.2f}"
+        print(
+            f"{row['variant_label']}: return {row['total_return_pct']:.2f}% | "
+            f"win rate {row['win_rate_pct']:.2f}% | PF {profit_factor} | trades {row['trade_count']}"
+        )
+    print()
+    print(f"Sweep folder: {sweep_root}")
+    print(f"Comparison CSV: {comparison_csv_path}")
+    print(f"Comparison JSON: {comparison_json_path}")
+
+
+def run_backtest_sweep(
+    args: argparse.Namespace,
+    *,
+    raw_config: dict,
+    config,
+    analysis_start_utc: datetime,
+    analysis_end_utc: datetime,
+    resolved_output_dir: str,
+) -> None:
+    """Run a one-parameter sweep and save a side-by-side comparison summary."""
+    strategy_config = resolve_strategy_config(raw_config, args.symbol, args.strategy, args.interval)
+    common_overrides, variants = build_sweep_variants(args, base_strategy_config=strategy_config)
+
+    from trading_bot.data import download_data_range
+
+    interval_requirements: dict[str, int] = {}
+    for variant in variants:
+        strategy = create_strategy(variant.strategy_config)
+        interval_requirements[strategy.interval] = max(
+            interval_requirements.get(strategy.interval, 0),
+            strategy.lookback_bars,
+        )
+
+    raw_data_by_interval: dict[str, pd.DataFrame] = {}
+    for interval, warmup_bars in interval_requirements.items():
+        raw_df = download_data_range(
+            args.symbol.upper(),
+            interval,
+            analysis_start_utc,
+            analysis_end_utc,
+            warmup_bars=warmup_bars,
+        )
+        if raw_df.empty:
+            raise ValueError("Alpaca returned no bars for the requested historical window.")
+        raw_data_by_interval[interval] = raw_df
+
+    run_timestamp = make_run_timestamp()
+    sweep_root = build_sweep_root(
+        resolved_output_dir,
+        symbol=args.symbol.upper(),
+        strategy_name=strategy_config["name"],
+        start_arg=args.start,
+        end_arg=args.end,
+        sweep_param=args.sweep_param,
+        run_timestamp=run_timestamp,
+    )
+
+    comparison_rows: list[dict] = []
+    for variant in variants:
+        variant_strategy = create_strategy(variant.strategy_config)
+        artifacts = save_backtest_run(
+            args=args,
+            config=config,
+            strategy_config=variant.strategy_config,
+            raw_df=raw_data_by_interval[variant_strategy.interval],
+            analysis_start_utc=analysis_start_utc,
+            analysis_end_utc=analysis_end_utc,
+            resolved_output_dir=str(sweep_root),
+            strategy_overrides=common_overrides,
+            run_timestamp=run_timestamp,
+            slug_suffix=variant.slug,
+            summary_metadata={
+                "sweep": {
+                    "parameter": args.sweep_param,
+                    "value": variant.sweep_value,
+                    "variant_label": variant.label,
+                    "common_overrides": common_overrides,
+                }
+            },
+            print_terminal_summary=False,
+        )
+        comparison_rows.append(build_sweep_comparison_row(variant, artifacts))
+
+    comparison_df = pd.DataFrame(comparison_rows)
+    comparison_csv_path = sweep_root / f"{run_timestamp}_sweep_comparison.csv"
+    comparison_json_path = sweep_root / f"{run_timestamp}_sweep_summary.json"
+    comparison_df.to_csv(comparison_csv_path, index=False)
+    comparison_json_path.write_text(
+        json.dumps(
+            {
+                "symbol": args.symbol.upper(),
+                "strategy": strategy_config["name"],
+                "sweep_param": args.sweep_param,
+                "sweep_values": [variant.sweep_value for variant in variants],
+                "common_overrides": common_overrides,
+                "run_count": len(comparison_rows),
+                "runs": comparison_rows,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    print_sweep_summary(
+        symbol=args.symbol.upper(),
+        strategy_name=strategy_config["name"],
+        sweep_param=args.sweep_param,
+        comparison_rows=comparison_rows,
+        comparison_csv_path=comparison_csv_path,
+        comparison_json_path=comparison_json_path,
+        sweep_root=sweep_root,
+    )
+
+
+def run_backtest(args: argparse.Namespace) -> None:
+    """Run one offline backtest from CLI arguments."""
+    if args.list_strategies:
+        print("\n".join(list_supported_strategies()))
+        return
+
+    raw_config = load_raw_config(args.config)
+    config = load_config(args.config)
+    strategy_config = resolve_strategy_config(raw_config, args.symbol, args.strategy, args.interval)
+
+    analysis_start_local = parse_window_timestamp(args.start, is_end=False)
+    analysis_end_local = parse_window_timestamp(args.end, is_end=True)
+    if analysis_end_local <= analysis_start_local:
+        raise ValueError("Backtest end must be after start.")
+
+    analysis_start_utc = to_utc(analysis_start_local)
+    analysis_end_utc = to_utc(analysis_end_local)
+    resolved_output_dir = resolve_output_dir(args)
+
+    if args.sweep_param:
+        run_backtest_sweep(
+            args,
+            raw_config=raw_config,
+            config=config,
+            analysis_start_utc=analysis_start_utc,
+            analysis_end_utc=analysis_end_utc,
+            resolved_output_dir=resolved_output_dir,
+        )
+        return
+
+    from trading_bot.data import download_data_range
+
+    common_overrides, variants = build_sweep_variants(args, base_strategy_config=strategy_config)
+    resolved_strategy_config = variants[0].strategy_config
+    strategy = create_strategy(resolved_strategy_config)
+    raw_df = download_data_range(
+        args.symbol.upper(),
+        strategy.interval,
+        analysis_start_utc,
+        analysis_end_utc,
+        warmup_bars=strategy.lookback_bars,
+    )
+    if raw_df.empty:
+        raise ValueError("Alpaca returned no bars for the requested historical window.")
+
+    save_backtest_run(
+        args=args,
+        config=config,
+        strategy_config=resolved_strategy_config,
+        raw_df=raw_df,
+        analysis_start_utc=analysis_start_utc,
+        analysis_end_utc=analysis_end_utc,
+        resolved_output_dir=resolved_output_dir,
+        strategy_overrides=common_overrides,
+    )
 
 
 def main() -> None:

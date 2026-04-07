@@ -3,7 +3,7 @@
 import time
 import pandas as pd
 
-from trading_bot.broker import connect_alpaca, get_account, market_is_open
+from trading_bot.broker import connect_alpaca, get_account, get_market_clock, market_is_open
 from trading_bot.config import BotConfig, SymbolAssignment, load_config
 from trading_bot.data import download_data
 from trading_bot.decision_logging import (
@@ -14,6 +14,7 @@ from trading_bot.decision_logging import (
     serialize_value,
 )
 from trading_bot.execution import (
+    handle_flatten_before_close,
     handle_exit_triggers,
     handle_pending_order_state,
     submit_and_track_order,
@@ -24,6 +25,7 @@ from trading_bot.risk import (
     build_exit_levels_for_live_position,
     build_exit_levels_from_entry_plan,
     calculate_order_qty,
+    is_within_flatten_before_close_window,
     should_exit_position,
 )
 from trading_bot.strategies.base import PositionContext
@@ -177,7 +179,13 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         print(f"Non-protective working orders at Alpaca: {len(live_state['blocking_orders'])}")
 
     # Check whether the market is currently open before allowing live orders.
-    current_market_open = market_is_open(trading_client)
+    market_clock = get_market_clock(trading_client)
+    current_market_open = bool(market_clock.is_open) if market_clock is not None else market_is_open(trading_client)
+    flatten_window_active = is_within_flatten_before_close_window(
+        None if market_clock is None else getattr(market_clock, "timestamp", None),
+        flatten_before_close=config.risk.flatten_before_close,
+        flatten_minutes_before_close=config.risk.flatten_minutes_before_close,
+    )
 
     # Build the decision and strategy-context log rows for this cycle.
     def log_decision_for_cycle(action: str, reason: str, qty: int = 0, market_open=None) -> str:
@@ -246,6 +254,8 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             take_profit_pct=config.risk.take_profit_pct,
             risk_fraction_of_buying_power=config.risk.risk_fraction_of_buying_power,
             max_position_qty=config.risk.max_position_qty,
+            flatten_before_close=config.risk.flatten_before_close,
+            flatten_minutes_before_close=config.risk.flatten_minutes_before_close,
             live_state=live_state,
         )
         return log_decision_event(decision_row=decision_row, strategy_context_row=strategy_context_row)
@@ -267,6 +277,28 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         serialize_value=serialize_value,
     ):
         return
+
+    if current_market_open and flatten_window_active:
+        print("Inside the configured pre-close flatten window.")
+        if handle_flatten_before_close(
+            trading_client=trading_client,
+            session_state=session_state,
+            symbol=symbol,
+            latest_close=latest_close,
+            event_key=latest_event_key,
+            live_state=live_state,
+            log_decision_event=log_decision_for_cycle,
+            bot_version=config.bot.version,
+            strategy_name=strategy.name,
+            strategy_version=strategy.version,
+            order_status_poll_seconds=config.execution.order_status_poll_seconds,
+            order_status_timeout_seconds=config.execution.order_status_timeout_seconds,
+            stop_loss_pct=config.risk.stop_loss_pct,
+            take_profit_pct=config.risk.take_profit_pct,
+            enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
+            serialize_value=serialize_value,
+        ):
+            return
 
     # Force-test mode bypasses normal strategy logic and submits the configured action.
     if config.execution.force_test_trade:

@@ -89,6 +89,8 @@ def build_strategy_context_payload(
     take_profit_pct: float,
     risk_fraction_of_buying_power: float,
     max_position_qty: int,
+    flatten_before_close: bool,
+    flatten_minutes_before_close: int,
     live_state: dict,
 ) -> dict:
     """Build flexible strategy/context data without forcing CSV schema changes."""
@@ -130,6 +132,8 @@ def build_strategy_context_payload(
             "take_profit_pct": take_profit_pct,
             "risk_fraction_of_buying_power": risk_fraction_of_buying_power,
             "max_position_qty": max_position_qty,
+            "flatten_before_close": flatten_before_close,
+            "flatten_minutes_before_close": flatten_minutes_before_close,
         },
         "strategy_signals": strategy_signals,
         "broker_state": {

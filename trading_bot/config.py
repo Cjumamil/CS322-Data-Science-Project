@@ -31,6 +31,8 @@ class RiskSettings:
     risk_fraction_of_buying_power: float
     stop_loss_pct: float
     take_profit_pct: float
+    flatten_before_close: bool
+    flatten_minutes_before_close: int
 
 
 @dataclass(frozen=True)

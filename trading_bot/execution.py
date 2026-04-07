@@ -348,6 +348,68 @@ def handle_pending_order_state(
     return False
 
 
+def handle_flatten_before_close(
+    *,
+    trading_client,
+    session_state: dict,
+    symbol: str,
+    latest_close: float,
+    event_key,
+    live_state: dict,
+    log_decision_event,
+    bot_version: str,
+    strategy_name: str,
+    strategy_version: str,
+    order_status_poll_seconds: int,
+    order_status_timeout_seconds: int,
+    stop_loss_pct: float,
+    take_profit_pct: float,
+    enable_broker_side_stop_loss: bool,
+    serialize_value,
+) -> bool:
+    """Flatten any live position before the configured market close cutoff."""
+    position_side = live_state["position_side"]
+    if position_side == "flat":
+        log_decision_event("HOLD", "flatten_window_no_new_entries", market_open=True)
+        return True
+
+    action = exit_action_for_position_side(position_side)
+    qty = live_state["position_qty"]
+    if action is None or qty <= 0:
+        return False
+
+    if should_prevent_duplicate_trade(session_state, symbol, action, event_key):
+        print(f"Duplicate {action} prevented for the current strategy event.")
+        log_decision_event("HOLD", f"duplicate_{action.lower()}_prevented", qty=qty, market_open=True)
+        return True
+
+    cancel_stop_orders_if_needed(trading_client, symbol)
+    decision_id = log_decision_event(action, "flatten_before_close", qty=qty, market_open=True)
+    submit_and_track_order(
+        trading_client=trading_client,
+        session_state=session_state,
+        symbol=symbol,
+        action=action,
+        qty=qty,
+        event_key=event_key,
+        reason="flatten_before_close",
+        decision_price=latest_close,
+        decision_id=decision_id,
+        position_side_before=position_side,
+        position_side_after="flat",
+        bot_version=bot_version,
+        strategy_name=strategy_name,
+        strategy_version=strategy_version,
+        order_status_poll_seconds=order_status_poll_seconds,
+        order_status_timeout_seconds=order_status_timeout_seconds,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+        enable_broker_side_stop_loss=enable_broker_side_stop_loss,
+        serialize_value=serialize_value,
+    )
+    return True
+
+
 def handle_exit_triggers(
     *,
     trading_client,

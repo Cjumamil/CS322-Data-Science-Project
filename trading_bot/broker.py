@@ -91,14 +91,21 @@ def get_account(trading_client: TradingClient):
         return None
 
 
-def market_is_open(trading_client: TradingClient) -> bool:
-    """Check whether Alpaca reports the market as open right now."""
+def get_market_clock(trading_client: TradingClient):
+    """Return the Alpaca market clock object, or None if the request fails."""
     try:
-        clock = trading_client.get_clock()
-        return bool(clock.is_open)
+        return trading_client.get_clock()
     except Exception as exc:
         print(f"Error checking market clock: {exc}")
+        return None
+
+
+def market_is_open(trading_client: TradingClient) -> bool:
+    """Check whether Alpaca reports the market as open right now."""
+    clock = get_market_clock(trading_client)
+    if clock is None:
         return False
+    return bool(clock.is_open)
 
 
 def get_position(trading_client: TradingClient, symbol: str):

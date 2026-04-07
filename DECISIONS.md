@@ -217,3 +217,24 @@ Focus on capturing decision and intent.
 **Decision:** Expand the offline backtest workflow to generate per-trade zoom charts and separate local exploratory backtests from team-shared backtest artifacts.  
 **Reasoning:** Reviewing one full-run chart was not enough to inspect why the bot entered or exited specific trades. Adding per-trade zoom charts makes strategy review more practical, while separating local backtests from shared backtests keeps the repository cleaner and allows the team to selectively commit only the runs worth sharing.  
 **Approved by:** Joshua  
+
+## D-028
+**Date:** 2026-04-07  
+**Topic:** Position Sizing Cap Behavior  
+**Decision:** Treat `risk.max_position_qty` as an optional hard cap. Positive values enforce the cap, while `0` or lower disables it and lets position sizing be determined only by buying power and `risk_fraction_of_buying_power`.  
+**Reasoning:** A fixed share cap made backtest results harder to interpret across symbols and price regimes because later high-price trades were artificially constrained in ways that did not reflect the intended risk model. Allowing the cap to be disabled keeps the setting flexible for experiments while preserving the option to re-enable a hard limit later.  
+**Approved by:** Joshua  
+
+## D-029
+**Date:** 2026-04-07  
+**Topic:** Repo-Local Backtest Environment and Chart Scaling  
+**Decision:** Add a repo-local dependency bootstrap in `trading_bot/__init__.py` that prefers a bundled `.vendor_bundle` dependency folder and removes user-site packages from project entry points. Also make per-trade zoom-chart context scale with the configured candle interval and include the interval in each trade-chart title.  
+**Reasoning:** Fresh chats and shell sessions were repeatedly failing due to inconsistent Python package resolution between Conda, user-site installs, and blocked activation hooks. Moving Alpaca-related dependencies behind a repo-local bootstrap makes the backtest entry points more reproducible. At the same time, interval-aware chart scaling improves backtest review when experimenting with `1m`, `5m`, or slower bars, since a fixed bar window was visually misleading across different intervals.  
+**Approved by:** Joshua  
+
+## D-030
+**Date:** 2026-04-07  
+**Topic:** NVDA MACD Pullback Research Baseline  
+**Decision:** Use the current best-tested NVDA exploratory baseline of `ema_band_window = 72`, `require_pullback_breakout = true`, and `pullback_breakout_lookback = 3` for the next round of chart review and exit-focused research. Keep this as a working research baseline rather than a permanent final configuration until additional review is completed.  
+**Reasoning:** A one-parameter backtest sweep on `ema_band_window` improved behavior noticeably over the prior `200`-bar EMA band, especially by avoiding the previously identified April 1 short failure and producing a stronger long interpretation instead. A follow-up sweep showed that adding breakout confirmation helped reduce low-quality entries, and a smaller breakout lookback of `3` outperformed stricter values like `5`, `8`, and `10`. This suggests the strategy benefits from light price-structure confirmation without waiting so long that the continuation move is already mostly spent.  
+**Approved by:** Joshua  

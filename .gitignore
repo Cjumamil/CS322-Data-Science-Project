@@ -1,3 +1,8 @@
 .env
 *.env
 backtests/
+.vendor/
+.vendor_pkgs/
+.vendor_manual/
+.vendor_bundle/
+.wheelhouse/

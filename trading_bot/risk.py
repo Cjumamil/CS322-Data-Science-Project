@@ -1,6 +1,13 @@
 """Applies simple position sizing and exit rules for the bot."""
 
 import math
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
+REGULAR_MARKET_OPEN_MINUTE = (9 * 60) + 30
+REGULAR_MARKET_CLOSE_MINUTE = 16 * 60
 
 
 def calculate_order_qty(
@@ -9,13 +16,18 @@ def calculate_order_qty(
     risk_fraction_of_buying_power: float,
     max_position_qty: int,
 ) -> int:
-    """Choose a share quantity based on buying power and a risk budget."""
+    """Choose a share quantity based on buying power and a risk budget.
+
+    Positive ``max_position_qty`` values apply a hard cap. ``0`` or any lower
+    value disables the cap entirely.
+    """
     risk_budget = buying_power * risk_fraction_of_buying_power
     qty = math.floor(risk_budget / price)
 
-    # Keep the order size in a small, practical range for this project.
+    # Keep the order size practical, and only apply the share cap when enabled.
     qty = max(1, qty)
-    qty = min(qty, max_position_qty)
+    if max_position_qty >= 1:
+        qty = min(qty, max_position_qty)
 
     return qty
 
@@ -23,6 +35,28 @@ def calculate_order_qty(
 def round_price(price: float) -> float:
     """Round a price to two decimals for stock-style order levels."""
     return round(price, 2)
+
+
+def is_within_flatten_before_close_window(
+    timestamp: datetime | None,
+    *,
+    flatten_before_close: bool,
+    flatten_minutes_before_close: int,
+) -> bool:
+    """Return True when the timestamp falls inside the configured pre-close flatten window."""
+    if not flatten_before_close or timestamp is None or flatten_minutes_before_close <= 0:
+        return False
+
+    if timestamp.tzinfo is None:
+        local_timestamp = timestamp.replace(tzinfo=NEW_YORK_TIMEZONE)
+    else:
+        local_timestamp = timestamp.astimezone(NEW_YORK_TIMEZONE)
+
+    minutes_of_day = (local_timestamp.hour * 60) + local_timestamp.minute
+    return (
+        minutes_of_day >= (REGULAR_MARKET_CLOSE_MINUTE - flatten_minutes_before_close)
+        and minutes_of_day < REGULAR_MARKET_CLOSE_MINUTE
+    )
 
 
 def assess_stop_distance(
