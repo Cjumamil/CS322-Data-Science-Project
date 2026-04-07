@@ -203,3 +203,17 @@ Focus on capturing decision and intent.
 **Decision:** Keep hard risk exits in the shared risk layer, but allow `macd_pullback` to add configurable strategy-aware exits and entry refinements, including time stops, delayed MACD momentum-failure exits, and histogram confirmation at entry.  
 **Reasoning:** Some trade-management rules are generic across strategies, while others are specific to how a given strategy expresses momentum and follow-through. Keeping stop-loss and take-profit logic centralized preserves a clean shared risk model, while strategy-specific exits and entry filters allow `macd_pullback` to reduce stagnant trades and weaker crossovers without turning the shared risk layer into strategy-specific code. This hybrid approach improves modularity, readability, and extensibility for future strategies.  
 **Approved by:** Joshua  
+
+## D-026  
+**Date:** 2026-04-06  
+**Topic:** EMA-Band Redesign for MACD Pullback  
+**Decision:** Re-center `macd_pullback` around an EMA-band continuation model using `EMA12`, `EMA26`, and `EMA200` high/close/low bands, with named concept columns for trend, pullback, and re-entry logic.  
+**Reasoning:** The prior `macd_pullback` implementation had drifted into a mix of entry filters and exit rules that no longer matched the original continuation-style intent. Reframing the strategy around explicit EMA-band concepts makes the logic easier to understand, tune, and debug while keeping the strategy closer to its intended continuation-based behavior.  
+**Approved by:** Joshua  
+
+## D-027  
+**Date:** 2026-04-06  
+**Topic:** Backtest Review Workflow  
+**Decision:** Expand the offline backtest workflow to generate per-trade zoom charts and separate local exploratory backtests from team-shared backtest artifacts.  
+**Reasoning:** Reviewing one full-run chart was not enough to inspect why the bot entered or exited specific trades. Adding per-trade zoom charts makes strategy review more practical, while separating local backtests from shared backtests keeps the repository cleaner and allows the team to selectively commit only the runs worth sharing.  
+**Approved by:** Joshua  

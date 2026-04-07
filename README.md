@@ -21,13 +21,14 @@ The system is designed to simulate real-world trading behavior, including:
 * Config-driven setup via `bot_config.toml`
 * Multi-symbol sequential evaluation in one run
 * Pluggable strategy architecture
-* Current built-in strategies: SMA crossover and MACD pullback
+* Current built-in strategies: SMA crossover and EMA-band MACD pullback
 * Paper trading mode (no real money used)
 * Trade logging with linked decision/trade IDs
 * Flexible strategy context logging in JSONL
 * Broker-state-aware order/position handling
 * Direction-aware paper trading for flat, long, and short positions
 * Basic risk management (broker-side stop-loss and loop-based take-profit)
+* Offline backtests with per-run artifacts and per-trade zoom charts
 
 ---
 
@@ -48,9 +49,10 @@ trading_bot/
 `-- strategies/
     |-- base.py           # Shared strategy interface/helpers
     |-- sma_crossover.py  # SMA crossover strategy
-    `-- macd_pullback.py  # EMA-200 + MACD pullback strategy
+    `-- macd_pullback.py  # EMA-band + MACD pullback continuation strategy
 
 bot_config.toml           # Bot/runtime/risk settings + per-symbol strategy assignments
+shared_backtests/         # Team-shared backtest runs intended for Git commits
 ```
 
 ---
@@ -86,6 +88,13 @@ The current sample config includes:
 * `ALB` with `macd_pullback` and a wider stop-distance filter
 * `MSFT` with `macd_pullback` on `5m` bars
 
+The current `macd_pullback` implementation is built around:
+
+* `EMA12`, `EMA26`, and `EMA200` high/close/low bands
+* trend, pullback, and re-entry concept columns
+* EMA-band-based stop placement with a `1.5R` target
+* optional strategy exits that can be toggled on later for experiments
+
 #### 4. Run the bot
 
 From the project root directory:
@@ -102,11 +111,18 @@ Use the separate backtest entry point for historical analysis:
 python -m trading_bot.backtest --symbol MSFT --strategy macd_pullback --start 2025-01-01 --end 2025-03-31
 ```
 
-This saves artifacts under `backtests/`, with each run stored in its own timestamped folder containing a trade CSV, summary JSON, and chart image.
+This saves artifacts under local `backtests/` by default, with each run stored in its own timestamped folder containing a trade CSV, summary JSON, a broad overview chart, and per-trade zoom charts.
+
+To save a run under the team-shared folder intended for Git commits, add `--shared`:
+
+```bash
+python -m trading_bot.backtest --symbol MSFT --strategy macd_pullback --start 2025-01-01 --end 2025-03-31 --shared
+```
 
 Example run folder name:
 
 * `backtests/2026-04-02_00-40-22_ALB_macd_pullback_2025-03-31_to_2026-03-31/`
+* `shared_backtests/2026-04-02_00-40-22_ALB_macd_pullback_2025-03-31_to_2026-03-31/`
 
 ---
 
@@ -127,7 +143,15 @@ The bot writes three main logs in the project root:
 * `decision_log.csv` - stable, spreadsheet-friendly record of bot decisions
 * `trade_log.csv` - execution/fill log with order lifecycle details
 * `strategy_context_log.jsonl` - flexible strategy-specific context for each decision
-* `backtests/<timestamped-run-folder>/` - offline backtest trade logs, summaries, and charts for one run
+* `backtests/<timestamped-run-folder>/` - local offline backtest trade logs, summaries, and charts for one run
+* `shared_backtests/<timestamped-run-folder>/` - team-shared offline backtest runs intended for Git commits
+
+Each run can also contain a `trade_charts/` folder with one zoomed candlestick chart per trade, including:
+
+* trade ID and symbol in the chart title
+* signed return and exit reason in the filename
+* `EMA12`, `EMA26`, and `EMA200` high/close/low overlays
+* a MACD panel under the price chart
 
 `decision_id` links the decision log, trade log, and strategy context entries together.
 

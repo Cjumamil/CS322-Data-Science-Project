@@ -1,4 +1,4 @@
-"""MACD pullback strategy with EMA-200 trend and sideways filtering."""
+"""EMA-band MACD pullback strategy with named concept columns."""
 
 from dataclasses import dataclass
 
@@ -27,43 +27,58 @@ def _safe_bool(value) -> bool:
 
 @dataclass(frozen=True)
 class MacdPullbackStrategy(TradingStrategy):
-    """Trend-following MACD pullback entries with EMA-200 trend confirmation."""
+    """Trend-following pullback entries using EMA200 bands and MACD re-expansion."""
 
     interval: str
     lookback_bars: int
+    ema_fast_window: int
+    ema_slow_window: int
     macd_fast_window: int
     macd_slow_window: int
     macd_signal_window: int
-    trend_ema_window: int
+    ema_band_window: int
     opening_no_trade_bars: int
-    ema_slope_lookback: int
-    recent_range_lookback: int
-    ema_slope_threshold: float
-    min_recent_range_frac_of_price: float
-    macd_near_zero_lookback: int
-    sideways_macd_near_zero_threshold: float
-    pullback_reset_zone_threshold: float
+    trend_persistence_lookback: int
+    min_bars_above_band_for_long: int
+    min_bars_below_band_for_short: int
+    trend_slope_lookback: int
+    min_ema_band_slope_frac: float
+    sideways_lookback: int
+    max_inside_band_bars: int
+    require_prior_impulse: bool
+    prior_impulse_lookback: int
+    min_prior_impulse_frac_of_price: float
     pullback_memory_bars: int
+    max_bars_since_pullback_touch: int
+    max_pullback_band_overshoot_frac: float
+    require_macd_above_zero_for_long: bool
+    require_macd_below_zero_for_short: bool
+    require_histogram_reexpansion: bool
+    require_ema12_reclaim: bool
+    require_ema26_reclaim: bool
+    require_pullback_breakout: bool
+    pullback_breakout_lookback: int
     ema_stop_buffer_pct: float
     take_profit_risk_multiple: float
     max_stop_distance_frac_of_price: float | None
-    enable_histogram_entry_confirmation: bool
     enable_time_stop: bool
     max_bars_in_trade: int
     enable_macd_failure_exit: bool
     min_bars_before_macd_exit: int
     name: str = "macd_pullback"
-    version: str = "v1"
+    version: str = "v2"
 
     def min_required_bars(self) -> int:
         return max(
-            self.trend_ema_window + self.ema_slope_lookback,
-            self.macd_slow_window + self.macd_signal_window,
-            self.recent_range_lookback,
-            self.macd_near_zero_lookback,
+            self.ema_band_window + self.trend_slope_lookback,
+            self.trend_persistence_lookback,
+            self.sideways_lookback,
+            self.prior_impulse_lookback,
             self.pullback_memory_bars,
+            self.max_bars_since_pullback_touch,
+            self.pullback_breakout_lookback,
             self.opening_no_trade_bars,
-        ) + 2
+        ) + 5
 
     def _interval_minutes(self) -> int:
         interval = self.interval.strip().lower()
@@ -78,7 +93,7 @@ class MacdPullbackStrategy(TradingStrategy):
         return position_context.bars_in_trade >= self.max_bars_in_trade
 
     def _macd_failure_triggered(self, latest_row: pd.Series, position_context: PositionContext | None) -> bool:
-        """Exit when momentum flips back against the open trade direction."""
+        """Optional early exit when MACD momentum flips back against the trade."""
         if not self.enable_macd_failure_exit or position_context is None:
             return False
         if position_context.bars_in_trade is None or position_context.bars_in_trade < self.min_bars_before_macd_exit:
@@ -93,7 +108,8 @@ class MacdPullbackStrategy(TradingStrategy):
         self,
         *,
         entry_price: float | None,
-        ema200: float | None,
+        ema_band_high: float | None,
+        ema_band_low: float | None,
         position_side: str,
     ) -> dict:
         """Build one preview or execution risk snapshot for a candidate entry."""
@@ -107,19 +123,25 @@ class MacdPullbackStrategy(TradingStrategy):
             "is_valid": False,
             "rejection_reason": None,
             "risk_reward_multiple": self.take_profit_risk_multiple,
-            "stop_source": "ema200_buffer",
-            "ema200": ema200,
+            "stop_source": "ema200_band_buffer",
+            "ema_band_high": ema_band_high,
+            "ema_band_low": ema_band_low,
             "ema_stop_buffer_pct": self.ema_stop_buffer_pct,
         }
 
-        if ema200 is None or position_side not in {"long", "short"}:
+        if position_side == "long":
+            if ema_band_low is None:
+                snapshot["rejection_reason"] = "invalid_risk_context"
+                return snapshot
+            stop_price = round(float(ema_band_low) * (1 - self.ema_stop_buffer_pct), 2)
+        elif position_side == "short":
+            if ema_band_high is None:
+                snapshot["rejection_reason"] = "invalid_risk_context"
+                return snapshot
+            stop_price = round(float(ema_band_high) * (1 + self.ema_stop_buffer_pct), 2)
+        else:
             snapshot["rejection_reason"] = "invalid_risk_context"
             return snapshot
-
-        if position_side == "long":
-            stop_price = round(ema200 * (1 - self.ema_stop_buffer_pct), 2)
-        else:
-            stop_price = round(ema200 * (1 + self.ema_stop_buffer_pct), 2)
 
         validation = assess_stop_distance(
             entry_price=entry_price,
@@ -129,17 +151,18 @@ class MacdPullbackStrategy(TradingStrategy):
         )
 
         snapshot.update(validation)
-        snapshot["stop_source"] = "ema200_buffer"
-        snapshot["risk_reward_multiple"] = self.take_profit_risk_multiple
-        snapshot["ema200"] = ema200
-        snapshot["ema_stop_buffer_pct"] = self.ema_stop_buffer_pct
         return snapshot
 
     def prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add MACD pullback indicators, filters, and helper columns."""
+        """Add EMA-band pullback indicators, concept columns, and helper fields."""
         work = df.copy().sort_index()
 
-        work["EMA200"] = work["Close"].ewm(span=self.trend_ema_window, adjust=False).mean()
+        work["EMA12"] = work["Close"].ewm(span=self.ema_fast_window, adjust=False).mean()
+        work["EMA26"] = work["Close"].ewm(span=self.ema_slow_window, adjust=False).mean()
+        work["EMA200_high"] = work["High"].ewm(span=self.ema_band_window, adjust=False).mean()
+        work["EMA200_close"] = work["Close"].ewm(span=self.ema_band_window, adjust=False).mean()
+        work["EMA200_low"] = work["Low"].ewm(span=self.ema_band_window, adjust=False).mean()
+
         work["MACD"] = (
             work["Close"].ewm(span=self.macd_fast_window, adjust=False).mean()
             - work["Close"].ewm(span=self.macd_slow_window, adjust=False).mean()
@@ -148,43 +171,98 @@ class MacdPullbackStrategy(TradingStrategy):
         work["histogram"] = work["MACD"] - work["signal_line"]
         work["histogram_previous"] = work["histogram"].shift(1)
 
-        work["ema_slope"] = work["EMA200"] - work["EMA200"].shift(self.ema_slope_lookback)
-        rolling_high = work["High"].rolling(self.recent_range_lookback).max()
-        rolling_low = work["Low"].rolling(self.recent_range_lookback).min()
-        work["recent_range"] = rolling_high - rolling_low
-        work["recent_range_frac_of_price"] = work["recent_range"] / work["Close"]
+        work["ema_band_slope"] = work["EMA200_close"] - work["EMA200_close"].shift(self.trend_slope_lookback)
+        work["ema_band_slope_frac"] = work["ema_band_slope"] / work["Close"].where(work["Close"] > 0)
 
-        work["normalized_ema_slope"] = (
-            work["ema_slope"].abs() / work["recent_range"].where(work["recent_range"] > 0)
-        )
-        work["recent_max_abs_macd"] = work["MACD"].abs().rolling(
-            self.macd_near_zero_lookback,
-            min_periods=self.macd_near_zero_lookback,
-        ).max()
+        work["close_above_ema_band"] = work["Close"] > work["EMA200_high"]
+        work["close_below_ema_band"] = work["Close"] < work["EMA200_low"]
+        work["close_inside_ema_band"] = ~work["close_above_ema_band"] & ~work["close_below_ema_band"]
 
-        work["recent_range_too_small"] = (
-            work["recent_range_frac_of_price"] < self.min_recent_range_frac_of_price
-        ).fillna(True)
-        work["macd_near_zero"] = (
-            work["MACD"].abs()
-            <= (self.sideways_macd_near_zero_threshold * work["recent_max_abs_macd"])
+        above_count = work["close_above_ema_band"].astype(int).rolling(
+            self.trend_persistence_lookback, min_periods=self.trend_persistence_lookback
+        ).sum()
+        below_count = work["close_below_ema_band"].astype(int).rolling(
+            self.trend_persistence_lookback, min_periods=self.trend_persistence_lookback
+        ).sum()
+        inside_count = work["close_inside_ema_band"].astype(int).rolling(
+            self.sideways_lookback, min_periods=self.sideways_lookback
+        ).sum()
+
+        work["long_trend"] = (
+            work["close_above_ema_band"]
+            & (above_count >= self.min_bars_above_band_for_long)
+            & (work["ema_band_slope_frac"] >= self.min_ema_band_slope_frac)
         ).fillna(False)
+        work["short_trend"] = (
+            work["close_below_ema_band"]
+            & (below_count >= self.min_bars_below_band_for_short)
+            & (work["ema_band_slope_frac"] <= -self.min_ema_band_slope_frac)
+        ).fillna(False)
+
+        work["trend_bias"] = "neutral"
+        work.loc[work["long_trend"], "trend_bias"] = "long"
+        work.loc[work["short_trend"], "trend_bias"] = "short"
         work["sideways_market"] = (
-            work["recent_range_too_small"]
-            | (
-                (work["normalized_ema_slope"] < self.ema_slope_threshold).fillna(True)
-                & work["macd_near_zero"]
-            )
-        )
-        work["trend_filter_tradable"] = ~work["recent_range_too_small"]
+            (inside_count >= self.max_inside_band_bars)
+            & ~work["long_trend"]
+            & ~work["short_trend"]
+        ).fillna(True)
 
-        work["in_reset_zone_now"] = (
-            work["MACD"].abs()
-            <= (self.pullback_reset_zone_threshold * work["recent_max_abs_macd"])
-        ).fillna(False)
-        work["had_recent_reset"] = (
-            work["in_reset_zone_now"].astype(int).rolling(self.pullback_memory_bars, min_periods=1).max() > 0
+        work["long_extension_frac"] = ((work["High"] - work["EMA200_high"]).clip(lower=0)) / work["Close"]
+        work["short_extension_frac"] = ((work["EMA200_low"] - work["Low"]).clip(lower=0)) / work["Close"]
+        work["recent_long_extension_frac"] = work["long_extension_frac"].rolling(
+            self.prior_impulse_lookback, min_periods=1
+        ).max()
+        work["recent_short_extension_frac"] = work["short_extension_frac"].rolling(
+            self.prior_impulse_lookback, min_periods=1
+        ).max()
+        if self.require_prior_impulse:
+            work["prior_impulse_long"] = (
+                work["recent_long_extension_frac"] >= self.min_prior_impulse_frac_of_price
+            ).fillna(False)
+            work["prior_impulse_short"] = (
+                work["recent_short_extension_frac"] >= self.min_prior_impulse_frac_of_price
+            ).fillna(False)
+        else:
+            work["prior_impulse_long"] = True
+            work["prior_impulse_short"] = True
+
+        work["pullback_touch_long_now"] = ((work["Low"] <= work["EMA200_high"]) | (work["Close"] <= work["EMA200_high"])).fillna(False)
+        work["pullback_touch_short_now"] = ((work["High"] >= work["EMA200_low"]) | (work["Close"] >= work["EMA200_low"])).fillna(False)
+        work["recent_long_trend"] = (
+            work["long_trend"].shift(1, fill_value=False).astype(int).rolling(self.pullback_memory_bars, min_periods=1).max() > 0
         )
+        work["recent_short_trend"] = (
+            work["short_trend"].shift(1, fill_value=False).astype(int).rolling(self.pullback_memory_bars, min_periods=1).max() > 0
+        )
+        work["had_recent_pullback_long"] = (
+            work["pullback_touch_long_now"].astype(int).rolling(self.max_bars_since_pullback_touch, min_periods=1).max() > 0
+        )
+        work["had_recent_pullback_short"] = (
+            work["pullback_touch_short_now"].astype(int).rolling(self.max_bars_since_pullback_touch, min_periods=1).max() > 0
+        )
+
+        work["pullback_depth_ok_long"] = (
+            work["Low"] >= (work["EMA200_low"] * (1 - self.max_pullback_band_overshoot_frac))
+        ).fillna(False)
+        work["pullback_depth_ok_short"] = (
+            work["High"] <= (work["EMA200_high"] * (1 + self.max_pullback_band_overshoot_frac))
+        ).fillna(False)
+        work["pullback_active_long"] = (
+            work["recent_long_trend"] & work["had_recent_pullback_long"] & work["pullback_depth_ok_long"]
+        ).fillna(False)
+        work["pullback_active_short"] = (
+            work["recent_short_trend"] & work["had_recent_pullback_short"] & work["pullback_depth_ok_short"]
+        ).fillna(False)
+
+        if self.require_macd_above_zero_for_long:
+            work["macd_pullback_context_long"] = (work["MACD"] > 0).fillna(False)
+        else:
+            work["macd_pullback_context_long"] = True
+        if self.require_macd_below_zero_for_short:
+            work["macd_pullback_context_short"] = (work["MACD"] < 0).fillna(False)
+        else:
+            work["macd_pullback_context_short"] = True
 
         previous_macd = work["MACD"].shift(1)
         previous_signal = work["signal_line"].shift(1)
@@ -197,37 +275,46 @@ class MacdPullbackStrategy(TradingStrategy):
         work["macd_failure_long_signal"] = work["macd_cross_below_signal"]
         work["macd_failure_short_signal"] = work["macd_cross_above_signal"]
 
-        # Require histogram expansion in the trade direction to avoid weak crossovers.
-        work["histogram_long_confirmed"] = (
-            (work["histogram"] > 0) & (work["histogram"] > work["histogram_previous"])
-        ).fillna(False)
-        work["histogram_short_confirmed"] = (
-            (work["histogram"] < 0) & (work["histogram"] < work["histogram_previous"])
-        ).fillna(False)
-        work["price_above_ema200"] = work["Close"] > work["EMA200"]
-        work["price_below_ema200"] = work["Close"] < work["EMA200"]
-        work["trend_direction"] = "flat"
-        work.loc[work["price_above_ema200"], "trend_direction"] = "above_ema200"
-        work.loc[work["price_below_ema200"], "trend_direction"] = "below_ema200"
-        work["candidate_position_side"] = "flat"
-        work.loc[work["price_above_ema200"], "candidate_position_side"] = "long"
-        work.loc[work["price_below_ema200"], "candidate_position_side"] = "short"
-        if self.enable_histogram_entry_confirmation:
-            work["histogram_entry_confirmed"] = (
-                work["price_above_ema200"] & work["histogram_long_confirmed"]
-            ) | (
-                work["price_below_ema200"] & work["histogram_short_confirmed"]
-            )
-        else:
-            work["histogram_entry_confirmed"] = True
+        work["histogram_rising"] = (work["histogram"] > work["histogram_previous"]).fillna(False)
+        work["histogram_falling"] = (work["histogram"] < work["histogram_previous"]).fillna(False)
+
+        recent_pullback_high = work["High"].shift(1).rolling(self.pullback_breakout_lookback, min_periods=1).max()
+        recent_pullback_low = work["Low"].shift(1).rolling(self.pullback_breakout_lookback, min_periods=1).min()
+        work["pullback_breakout_long"] = (work["Close"] > recent_pullback_high).fillna(False)
+        work["pullback_breakout_short"] = (work["Close"] < recent_pullback_low).fillna(False)
+
+        bullish_reentry = pd.Series(True, index=work.index)
+        bearish_reentry = pd.Series(True, index=work.index)
+
+        if self.require_histogram_reexpansion:
+            bullish_reentry &= work["histogram_rising"]
+            bearish_reentry &= work["histogram_falling"]
+        if self.require_ema12_reclaim:
+            bullish_reentry &= work["Close"] > work["EMA12"]
+            bearish_reentry &= work["Close"] < work["EMA12"]
+        if self.require_ema26_reclaim:
+            bullish_reentry &= work["Close"] > work["EMA26"]
+            bearish_reentry &= work["Close"] < work["EMA26"]
+        if self.require_pullback_breakout:
+            bullish_reentry &= work["pullback_breakout_long"]
+            bearish_reentry &= work["pullback_breakout_short"]
+
+        work["bullish_reentry_trigger"] = bullish_reentry.fillna(False)
+        work["bearish_reentry_trigger"] = bearish_reentry.fillna(False)
 
         risk_snapshots = []
         for _, row in work.iterrows():
+            side = "flat"
+            if bool(row["pullback_active_long"]):
+                side = "long"
+            elif bool(row["pullback_active_short"]):
+                side = "short"
             risk_snapshots.append(
                 self._build_entry_risk_snapshot(
                     entry_price=_safe_float(row["Close"]),
-                    ema200=_safe_float(row["EMA200"]),
-                    position_side=str(row["candidate_position_side"]),
+                    ema_band_high=_safe_float(row["EMA200_high"]),
+                    ema_band_low=_safe_float(row["EMA200_low"]),
+                    position_side=side,
                 )
             )
         risk_snapshot_df = pd.DataFrame(risk_snapshots, index=work.index)
@@ -253,32 +340,28 @@ class MacdPullbackStrategy(TradingStrategy):
             work["regular_session_bar"]
             & (minutes_of_day < (REGULAR_MARKET_OPEN_MINUTE + opening_window_minutes))
         )
-        work["entries_allowed"] = (
-            work["regular_session_bar"]
-            & ~work["opening_no_trade_window"]
-            & work["trend_filter_tradable"]
-            & ~work["sideways_market"]
-        )
+        work["entries_allowed"] = work["regular_session_bar"] & ~work["opening_no_trade_window"] & ~work["sideways_market"]
 
         work["long_entry_setup"] = (
             work["entries_allowed"]
-            & work["price_above_ema200"]
-            & work["had_recent_reset"]
-            & work["macd_cross_above_signal"]
-            & work["histogram_entry_confirmed"]
+            & work["prior_impulse_long"]
+            & work["pullback_active_long"]
+            & work["macd_pullback_context_long"]
+            & (work["Close"] >= work["EMA200_close"])
+            & work["bullish_reentry_trigger"]
         )
         work["short_entry_setup"] = (
             work["entries_allowed"]
-            & work["price_below_ema200"]
-            & work["had_recent_reset"]
-            & work["macd_cross_below_signal"]
-            & work["histogram_entry_confirmed"]
+            & work["prior_impulse_short"]
+            & work["pullback_active_short"]
+            & work["macd_pullback_context_short"]
+            & (work["Close"] <= work["EMA200_close"])
+            & work["bearish_reentry_trigger"]
         )
         work["long_entry_signal"] = work["long_entry_setup"] & work["entry_risk_plan_valid"]
         work["short_entry_signal"] = work["short_entry_setup"] & work["entry_risk_plan_valid"]
         work["entry_blocked_by_stop_filter"] = (
-            (work["long_entry_setup"] | work["short_entry_setup"])
-            & ~work["entry_risk_plan_valid"]
+            (work["long_entry_setup"] | work["short_entry_setup"]) & ~work["entry_risk_plan_valid"]
         )
         work["entry_blocked_by_max_stop_distance"] = (
             work["entry_blocked_by_stop_filter"] & work["entry_rejected_max_stop_distance"]
@@ -291,7 +374,7 @@ class MacdPullbackStrategy(TradingStrategy):
         work.loc[work["short_entry_signal"], "entry_action"] = "SELL"
         work["exit_action"] = pd.Series(index=work.index, dtype="object")
 
-        exposure_signal = pd.Series(pd.NA, index=work.index, dtype="object")
+        exposure_signal = pd.Series(index=work.index, dtype="float64")
         exposure_signal.loc[work["long_entry_signal"]] = 1
         exposure_signal.loc[work["short_entry_signal"]] = -1
         work["signal"] = exposure_signal.ffill().fillna(0).astype(int)
@@ -304,33 +387,35 @@ class MacdPullbackStrategy(TradingStrategy):
         work["abs_error"] = (work["Close"] - work["predicted_close"]).abs()
 
         required_columns = [
-            "EMA200",
+            "EMA12",
+            "EMA26",
+            "EMA200_high",
+            "EMA200_close",
+            "EMA200_low",
             "MACD",
             "signal_line",
             "histogram",
-            "recent_range",
-            "normalized_ema_slope",
-            "recent_max_abs_macd",
-            "stop_price",
         ]
         work = work.dropna(subset=required_columns).copy()
-
         return work
 
     def recent_display_columns(self) -> list[str]:
         return [
             "Close",
-            "EMA200",
-            "normalized_ema_slope",
-            "recent_range",
+            "EMA12",
+            "EMA26",
+            "EMA200_high",
+            "EMA200_close",
+            "EMA200_low",
             "MACD",
             "signal_line",
             "histogram",
-            "histogram_previous",
+            "trend_bias",
+            "pullback_active_long",
+            "pullback_active_short",
+            "bullish_reentry_trigger",
+            "bearish_reentry_trigger",
             "stop_distance_frac_of_price",
-            "entry_rejected_max_stop_distance",
-            "had_recent_reset",
-            "sideways_market",
             "entry_action",
         ]
 
@@ -388,7 +473,8 @@ class MacdPullbackStrategy(TradingStrategy):
     def build_entry_risk_plan(self, latest_row: pd.Series, position_side: str, risk_settings) -> dict | None:
         return self._build_entry_risk_snapshot(
             entry_price=_safe_float(latest_row.get("Close")),
-            ema200=_safe_float(latest_row.get("EMA200")),
+            ema_band_high=_safe_float(latest_row.get("EMA200_high")),
+            ema_band_low=_safe_float(latest_row.get("EMA200_low")),
             position_side=position_side,
         )
 
@@ -397,22 +483,35 @@ class MacdPullbackStrategy(TradingStrategy):
 
     def build_strategy_parameters(self) -> dict:
         return {
-            "stop_model": "ema200_buffer",
+            "stop_model": "ema200_band_buffer",
             "take_profit_model": "risk_reward_multiple",
+            "ema_fast_window": self.ema_fast_window,
+            "ema_slow_window": self.ema_slow_window,
             "macd_fast_window": self.macd_fast_window,
             "macd_slow_window": self.macd_slow_window,
             "macd_signal_window": self.macd_signal_window,
-            "enable_histogram_entry_confirmation": self.enable_histogram_entry_confirmation,
-            "trend_ema_window": self.trend_ema_window,
+            "ema_band_window": self.ema_band_window,
             "opening_no_trade_bars": self.opening_no_trade_bars,
-            "ema_slope_lookback": self.ema_slope_lookback,
-            "recent_range_lookback": self.recent_range_lookback,
-            "ema_slope_threshold": self.ema_slope_threshold,
-            "min_recent_range_frac_of_price": self.min_recent_range_frac_of_price,
-            "macd_near_zero_lookback": self.macd_near_zero_lookback,
-            "sideways_macd_near_zero_threshold": self.sideways_macd_near_zero_threshold,
-            "pullback_reset_zone_threshold": self.pullback_reset_zone_threshold,
+            "trend_persistence_lookback": self.trend_persistence_lookback,
+            "min_bars_above_band_for_long": self.min_bars_above_band_for_long,
+            "min_bars_below_band_for_short": self.min_bars_below_band_for_short,
+            "trend_slope_lookback": self.trend_slope_lookback,
+            "min_ema_band_slope_frac": self.min_ema_band_slope_frac,
+            "sideways_lookback": self.sideways_lookback,
+            "max_inside_band_bars": self.max_inside_band_bars,
+            "require_prior_impulse": self.require_prior_impulse,
+            "prior_impulse_lookback": self.prior_impulse_lookback,
+            "min_prior_impulse_frac_of_price": self.min_prior_impulse_frac_of_price,
             "pullback_memory_bars": self.pullback_memory_bars,
+            "max_bars_since_pullback_touch": self.max_bars_since_pullback_touch,
+            "max_pullback_band_overshoot_frac": self.max_pullback_band_overshoot_frac,
+            "require_macd_above_zero_for_long": self.require_macd_above_zero_for_long,
+            "require_macd_below_zero_for_short": self.require_macd_below_zero_for_short,
+            "require_histogram_reexpansion": self.require_histogram_reexpansion,
+            "require_ema12_reclaim": self.require_ema12_reclaim,
+            "require_ema26_reclaim": self.require_ema26_reclaim,
+            "require_pullback_breakout": self.require_pullback_breakout,
+            "pullback_breakout_lookback": self.pullback_breakout_lookback,
             "ema_stop_buffer_pct": self.ema_stop_buffer_pct,
             "take_profit_risk_multiple": self.take_profit_risk_multiple,
             "max_stop_distance_frac_of_price": self.max_stop_distance_frac_of_price,
@@ -432,27 +531,45 @@ class MacdPullbackStrategy(TradingStrategy):
         macd_failure_triggered = self._macd_failure_triggered(latest_row, position_context)
         time_stop_triggered = self._bars_in_trade_exceeded(position_context)
         resolved_exit_action = self.exit_action(latest_row, position_context)
+
         return {
-            "ema200": _safe_float(latest_row["EMA200"]),
-            "normalized_ema_slope": _safe_float(latest_row["normalized_ema_slope"]),
-            "recent_range": _safe_float(latest_row["recent_range"]),
-            "recent_range_frac_of_price": _safe_float(latest_row["recent_range_frac_of_price"]),
+            "ema12": _safe_float(latest_row["EMA12"]),
+            "ema26": _safe_float(latest_row["EMA26"]),
+            "ema200_high": _safe_float(latest_row["EMA200_high"]),
+            "ema200_close": _safe_float(latest_row["EMA200_close"]),
+            "ema200_low": _safe_float(latest_row["EMA200_low"]),
+            "ema_band_slope_frac": _safe_float(latest_row["ema_band_slope_frac"]),
+            "close_above_ema_band": _safe_bool(latest_row["close_above_ema_band"]),
+            "close_below_ema_band": _safe_bool(latest_row["close_below_ema_band"]),
+            "close_inside_ema_band": _safe_bool(latest_row["close_inside_ema_band"]),
+            "long_trend": _safe_bool(latest_row["long_trend"]),
+            "short_trend": _safe_bool(latest_row["short_trend"]),
+            "trend_bias": str(latest_row["trend_bias"]),
+            "sideways_market": _safe_bool(latest_row["sideways_market"]),
+            "prior_impulse_long": _safe_bool(latest_row["prior_impulse_long"]),
+            "prior_impulse_short": _safe_bool(latest_row["prior_impulse_short"]),
+            "recent_long_extension_frac": _safe_float(latest_row["recent_long_extension_frac"]),
+            "recent_short_extension_frac": _safe_float(latest_row["recent_short_extension_frac"]),
+            "pullback_touch_long_now": _safe_bool(latest_row["pullback_touch_long_now"]),
+            "pullback_touch_short_now": _safe_bool(latest_row["pullback_touch_short_now"]),
+            "had_recent_pullback_long": _safe_bool(latest_row["had_recent_pullback_long"]),
+            "had_recent_pullback_short": _safe_bool(latest_row["had_recent_pullback_short"]),
+            "pullback_active_long": _safe_bool(latest_row["pullback_active_long"]),
+            "pullback_active_short": _safe_bool(latest_row["pullback_active_short"]),
             "macd": _safe_float(latest_row["MACD"]),
             "signal_line": _safe_float(latest_row["signal_line"]),
             "histogram": _safe_float(latest_row["histogram"]),
             "histogram_previous": _safe_float(latest_row["histogram_previous"]),
-            "histogram_current": _safe_float(latest_row["histogram"]),
-            "histogram_long_confirmed": _safe_bool(latest_row["histogram_long_confirmed"]),
-            "histogram_short_confirmed": _safe_bool(latest_row["histogram_short_confirmed"]),
-            "histogram_entry_confirmed": _safe_bool(latest_row["histogram_entry_confirmed"]),
-            "recent_max_abs_macd": _safe_float(latest_row["recent_max_abs_macd"]),
-            "in_reset_zone_now": _safe_bool(latest_row["in_reset_zone_now"]),
-            "had_recent_reset": _safe_bool(latest_row["had_recent_reset"]),
-            "sideways_market": _safe_bool(latest_row["sideways_market"]),
-            "trend_direction": str(latest_row["trend_direction"]),
-            "trend_filter_tradable": _safe_bool(latest_row["trend_filter_tradable"]),
+            "histogram_rising": _safe_bool(latest_row["histogram_rising"]),
+            "histogram_falling": _safe_bool(latest_row["histogram_falling"]),
+            "macd_pullback_context_long": _safe_bool(latest_row["macd_pullback_context_long"]),
+            "macd_pullback_context_short": _safe_bool(latest_row["macd_pullback_context_short"]),
+            "pullback_breakout_long": _safe_bool(latest_row["pullback_breakout_long"]),
+            "pullback_breakout_short": _safe_bool(latest_row["pullback_breakout_short"]),
+            "bullish_reentry_trigger": _safe_bool(latest_row["bullish_reentry_trigger"]),
+            "bearish_reentry_trigger": _safe_bool(latest_row["bearish_reentry_trigger"]),
             "entries_allowed": _safe_bool(latest_row["entries_allowed"]),
-            "candidate_position_side": str(latest_row["candidate_position_side"]),
+            "opening_no_trade_window": _safe_bool(latest_row["opening_no_trade_window"]),
             "stop_price": _safe_float(latest_row["stop_price"]),
             "stop_distance": _safe_float(latest_row["stop_distance"]),
             "stop_distance_frac_of_price": _safe_float(latest_row["stop_distance_frac_of_price"]),
@@ -466,7 +583,6 @@ class MacdPullbackStrategy(TradingStrategy):
             "short_entry_setup": _safe_bool(latest_row["short_entry_setup"]),
             "entry_blocked_by_stop_filter": _safe_bool(latest_row["entry_blocked_by_stop_filter"]),
             "entry_blocked_by_max_stop_distance": _safe_bool(latest_row["entry_blocked_by_max_stop_distance"]),
-            "opening_no_trade_window": _safe_bool(latest_row["opening_no_trade_window"]),
             "macd_failure_long_signal": _safe_bool(latest_row["macd_failure_long_signal"]),
             "macd_failure_short_signal": _safe_bool(latest_row["macd_failure_short_signal"]),
             "min_bars_before_macd_exit": self.min_bars_before_macd_exit,

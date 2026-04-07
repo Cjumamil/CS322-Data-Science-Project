@@ -23,6 +23,8 @@ from trading_bot.strategies import create_strategy, default_strategy_config, lis
 
 
 NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
+LOCAL_BACKTEST_OUTPUT_DIR = "backtests"
+SHARED_BACKTEST_OUTPUT_DIR = "shared_backtests"
 
 
 @dataclass
@@ -50,6 +52,7 @@ class SimulatedPosition:
 
 @dataclass
 class TradeRecord:
+    trade_id: str
     symbol: str
     strategy: str
     interval: str
@@ -88,8 +91,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="bot_config.toml", help="Path to the bot TOML config.")
     parser.add_argument(
         "--output-dir",
-        default="backtests",
-        help="Directory where summary files, trade CSVs, and charts will be saved.",
+        help="Optional output directory override for saved backtest artifacts.",
+    )
+    parser.add_argument(
+        "--shared",
+        action="store_true",
+        help="Save this run under the team-shared backtest folder instead of the local ignored folder.",
     )
     parser.add_argument(
         "--initial-equity",
@@ -117,6 +124,15 @@ def parse_args() -> argparse.Namespace:
         if missing:
             parser.error("the following arguments are required: " + ", ".join(f"--{name}" for name in missing))
     return args
+
+
+def resolve_output_dir(args: argparse.Namespace) -> str:
+    """Resolve the final output directory for one backtest run."""
+    if args.output_dir:
+        return args.output_dir
+    if args.shared:
+        return SHARED_BACKTEST_OUTPUT_DIR
+    return LOCAL_BACKTEST_OUTPUT_DIR
 
 
 def parse_window_timestamp(value: str, *, is_end: bool) -> datetime:
@@ -248,6 +264,7 @@ def build_backtest_position_context(position: SimulatedPosition, current_bar_num
 
 def close_position(
     *,
+    trade_number: int,
     position: SimulatedPosition,
     exit_time: datetime,
     exit_price: float,
@@ -262,6 +279,7 @@ def close_position(
     notional = position.entry_price * position.qty
     return_pct = (pnl / notional) * 100 if notional else 0.0
     return TradeRecord(
+        trade_id=f"T{trade_number:03d}",
         symbol=symbol,
         strategy=strategy_name,
         interval=interval,
@@ -379,6 +397,7 @@ def simulate_backtest(
                 )
             elif position is not None and pending_order.action == exit_action_for_position_side(position.side):
                 closed_trade = close_position(
+                    trade_number=len(trades) + 1,
                     position=position,
                     exit_time=timestamp,
                     exit_price=bar_open,
@@ -398,6 +417,7 @@ def simulate_backtest(
             exit_price, exit_reason = intrabar_exit_price(position, row)
             if exit_reason is not None and exit_price is not None:
                 closed_trade = close_position(
+                    trade_number=len(trades) + 1,
                     position=position,
                     exit_time=timestamp,
                     exit_price=exit_price,
@@ -453,6 +473,7 @@ def simulate_backtest(
         final_timestamp = analysis_df.index[-1]
         final_close = float(analysis_df.iloc[-1]["Close"])
         closed_trade = close_position(
+            trade_number=len(trades) + 1,
             position=position,
             exit_time=final_timestamp,
             exit_price=final_close,
@@ -590,6 +611,25 @@ def build_backtest_summary(
             ),
             **skipped_entries,
         },
+        "strategy_context_counts": {
+            "long_trend_bar_count": int(analysis_df.get("long_trend", pd.Series(dtype=bool)).sum()),
+            "short_trend_bar_count": int(analysis_df.get("short_trend", pd.Series(dtype=bool)).sum()),
+            "sideways_bar_count": int(analysis_df.get("sideways_market", pd.Series(dtype=bool)).sum()),
+            "long_pullback_bar_count": int(analysis_df.get("pullback_active_long", pd.Series(dtype=bool)).sum()),
+            "short_pullback_bar_count": int(analysis_df.get("pullback_active_short", pd.Series(dtype=bool)).sum()),
+            "bullish_reentry_bar_count": int(
+                analysis_df.get("bullish_reentry_trigger", pd.Series(dtype=bool)).sum()
+            ),
+            "bearish_reentry_bar_count": int(
+                analysis_df.get("bearish_reentry_trigger", pd.Series(dtype=bool)).sum()
+            ),
+            "long_entry_signal_count": int(
+                analysis_df.get("long_entry_signal", pd.Series(dtype=bool)).sum()
+            ),
+            "short_entry_signal_count": int(
+                analysis_df.get("short_entry_signal", pd.Series(dtype=bool)).sum()
+            ),
+        },
         "strategy_parameters": strategy_parameters,
         "risk_settings": {
             "max_position_qty": risk_settings.max_position_qty,
@@ -601,7 +641,13 @@ def build_backtest_summary(
     }
 
 
-def print_summary(summary: dict, *, trades_csv_path: Path, summary_json_path: Path, chart_path: Path | None) -> None:
+def print_summary(
+    summary: dict,
+    *,
+    trades_csv_path: Path,
+    summary_json_path: Path,
+    chart_path: Path | None,
+) -> None:
     """Print a concise terminal summary after a backtest run."""
     print(f"Backtest: {summary['strategy']}")
     print(f"Symbol: {summary['symbol']}")
@@ -622,6 +668,10 @@ def print_summary(summary: dict, *, trades_csv_path: Path, summary_json_path: Pa
     print(f"Summary JSON: {summary_json_path}")
     if chart_path is not None:
         print(f"Chart: {chart_path}")
+    trade_chart_dir = summary.get("trade_chart_dir")
+    trade_chart_count = summary.get("trade_chart_count", 0)
+    if trade_chart_dir:
+        print(f"Trade charts: {trade_chart_dir} ({trade_chart_count})")
 
 
 def make_run_slug(symbol: str, strategy_name: str, start_arg: str, end_arg: str) -> str:
@@ -634,6 +684,155 @@ def make_run_slug(symbol: str, strategy_name: str, start_arg: str, end_arg: str)
 def make_run_timestamp() -> str:
     """Return a sortable timestamp for one backtest run."""
     return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def _aligned_timestamp_for_index(raw_timestamp, index: pd.Index) -> pd.Timestamp:
+    """Convert a serialized trade timestamp into the same timezone shape as the DataFrame index."""
+    timestamp = pd.Timestamp(raw_timestamp)
+    if getattr(index, "tz", None) is None:
+        return timestamp.tz_localize(None) if timestamp.tzinfo is not None else timestamp
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize(index.tz)
+    return timestamp.tz_convert(index.tz)
+
+
+def plot_trade_zoom_charts(
+    *,
+    prepared_df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    output_dir: Path,
+    bars_before_entry: int = 24,
+    bars_after_exit: int = 16,
+) -> list[Path]:
+    """Save one zoomed candlestick + MACD chart per completed trade."""
+    try:
+        import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+    except ImportError:
+        print("matplotlib is not installed, so the trade zoom charts were skipped.")
+        return []
+
+    if trades_df.empty:
+        return []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+
+    def draw_candlesticks(ax, window_df: pd.DataFrame) -> None:
+        x_values = mdates.date2num(window_df.index.to_pydatetime())
+        if len(x_values) > 1:
+            width = float(pd.Series(x_values).diff().dropna().median()) * 0.82
+        else:
+            width = 1 / (24 * 60)
+
+        for x_value, (_, row) in zip(x_values, window_df.iterrows()):
+            open_price = float(row["Open"])
+            close_price = float(row["Close"])
+            high_price = float(row["High"])
+            low_price = float(row["Low"])
+            candle_color = "#2ca02c" if close_price >= open_price else "#d62728"
+            ax.vlines(x_value, low_price, high_price, color=candle_color, linewidth=1.6, alpha=0.98)
+            body_bottom = min(open_price, close_price)
+            body_height = max(abs(close_price - open_price), 0.02)
+            ax.add_patch(
+                Rectangle(
+                    (x_value - (width / 2), body_bottom),
+                    width,
+                    body_height,
+                    facecolor=candle_color,
+                    edgecolor=candle_color,
+                    linewidth=1.0,
+                    alpha=0.9,
+                )
+            )
+
+    for trade_number, trade in enumerate(trades_df.to_dict("records"), start=1):
+        entry_time = _aligned_timestamp_for_index(trade["entry_time"], prepared_df.index)
+        exit_time = _aligned_timestamp_for_index(trade["exit_time"], prepared_df.index)
+        entry_signal_time = _aligned_timestamp_for_index(trade["entry_signal_time"], prepared_df.index)
+        trade_id = str(trade.get("trade_id", f"T{trade_number:03d}"))
+
+        entry_loc = int(prepared_df.index.searchsorted(entry_time, side="left"))
+        exit_loc = int(prepared_df.index.searchsorted(exit_time, side="left"))
+        exit_loc = max(entry_loc, exit_loc)
+
+        start_loc = max(0, entry_loc - bars_before_entry)
+        end_loc = min(len(prepared_df), exit_loc + bars_after_exit + 1)
+        window_df = prepared_df.iloc[start_loc:end_loc].copy()
+        if window_df.empty:
+            continue
+
+        fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True, height_ratios=[3, 2])
+        price_ax, macd_ax = axes
+        fig.patch.set_facecolor("#121417")
+        for axis in axes:
+            axis.set_facecolor("#171b21")
+            axis.tick_params(colors="#d8dee9")
+            for spine in axis.spines.values():
+                spine.set_color("#5f6b7a")
+
+        draw_candlesticks(price_ax, window_df)
+        if "EMA12" in window_df.columns:
+            price_ax.plot(window_df.index, window_df["EMA12"], label="EMA12", linewidth=1.1, color="#5dade2")
+        if "EMA26" in window_df.columns:
+            price_ax.plot(window_df.index, window_df["EMA26"], label="EMA26", linewidth=1.1, color="#f5b041")
+        if "EMA200_high" in window_df.columns:
+            price_ax.plot(window_df.index, window_df["EMA200_high"], label="EMA200 high", linewidth=1.0, color="#ec7063")
+        if "EMA200_close" in window_df.columns:
+            price_ax.plot(window_df.index, window_df["EMA200_close"], label="EMA200 close", linewidth=1.0, color="#bb8fce")
+        if "EMA200_low" in window_df.columns:
+            price_ax.plot(window_df.index, window_df["EMA200_low"], label="EMA200 low", linewidth=1.0, color="#48c9b0")
+
+        price_ax.scatter(entry_signal_time, float(trade["entry_price"]), marker="o", s=55, facecolors="none", edgecolors="#f8f9f9", label="Signal")
+        price_ax.scatter(entry_time, float(trade["entry_price"]), marker="^" if trade["side"] == "long" else "v", s=70, color="#2ecc71" if trade["side"] == "long" else "#e74c3c", label="Entry")
+        price_ax.scatter(exit_time, float(trade["exit_price"]), marker="x", s=70, color="#f8f9f9", label="Exit")
+        price_ax.axhline(float(trade["stop_price"]), color="#e74c3c", linestyle="--", linewidth=1.0, alpha=0.8, label="Stop")
+        price_ax.axhline(float(trade["take_profit_price"]), color="#2ecc71", linestyle="--", linewidth=1.0, alpha=0.8, label="Target")
+        price_ax.set_ylabel("Price", color="#d8dee9")
+        price_ax.set_title(
+            f"{trade['symbol']} | {trade_id} | {trade['side']} | {trade['exit_reason']} | bars held {trade['bars_held']}"
+            ,
+            color="#f5f7fa",
+        )
+        price_ax.grid(alpha=0.25, color="#5f6b7a")
+        price_legend = price_ax.legend(loc="upper left", ncol=3)
+        price_legend.get_frame().set_facecolor("#171b21")
+        price_legend.get_frame().set_edgecolor("#5f6b7a")
+        for text in price_legend.get_texts():
+            text.set_color("#f5f7fa")
+
+        macd_ax.plot(window_df.index, window_df["MACD"], label="MACD", linewidth=1.0, color="#5dade2")
+        macd_ax.plot(window_df.index, window_df["signal_line"], label="Signal", linewidth=1.0, color="#f5b041")
+        bar_colors = ["#2ca02c" if value >= 0 else "#d62728" for value in window_df["histogram"].fillna(0)]
+        macd_ax.bar(window_df.index, window_df["histogram"], label="Histogram", alpha=0.4, width=0.01, color=bar_colors)
+        macd_ax.axhline(0, color="#f8f9f9", linewidth=0.8, alpha=0.6)
+        macd_ax.set_ylabel("MACD", color="#d8dee9")
+        macd_ax.set_xlabel("Time", color="#d8dee9")
+        macd_ax.grid(alpha=0.25, color="#5f6b7a")
+        macd_legend = macd_ax.legend(loc="upper left")
+        macd_legend.get_frame().set_facecolor("#171b21")
+        macd_legend.get_frame().set_edgecolor("#5f6b7a")
+        for text in macd_legend.get_texts():
+            text.set_color("#f5f7fa")
+
+        locator = mdates.AutoDateLocator()
+        formatter = mdates.ConciseDateFormatter(locator)
+        macd_ax.xaxis.set_major_locator(locator)
+        macd_ax.xaxis.set_major_formatter(formatter)
+
+        fig.tight_layout()
+        signed_return_pct = float(trade["return_pct"])
+        filename = (
+            f"{trade_id}_{trade['side']}_"
+            f"{signed_return_pct:+.2f}pct_{trade['exit_reason']}.png"
+        )
+        output_path = output_dir / filename
+        fig.savefig(output_path, dpi=150)
+        plt.close(fig)
+        saved_paths.append(output_path)
+
+    return saved_paths
 
 
 def plot_backtest_chart(
@@ -672,6 +871,8 @@ def plot_backtest_chart(
     price_ax.plot(window_df.index, window_df["Close"], label="Close", linewidth=1.2)
     if "EMA200" in window_df.columns:
         price_ax.plot(window_df.index, window_df["EMA200"], label="EMA200", linewidth=1.0)
+    if "EMA200_close" in window_df.columns:
+        price_ax.plot(window_df.index, window_df["EMA200_close"], label="EMA200 close", linewidth=1.0)
     if "SMA_FAST" in window_df.columns:
         price_ax.plot(window_df.index, window_df["SMA_FAST"], label="SMA fast", linewidth=1.0)
     if "SMA_SLOW" in window_df.columns:
@@ -740,12 +941,13 @@ def plot_backtest_chart(
     return output_path
 
 
-def build_output_paths(output_dir: str, slug: str, run_timestamp: str) -> tuple[Path, Path, Path]:
+def build_output_paths(output_dir: str, slug: str, run_timestamp: str) -> tuple[Path, Path, Path, Path]:
     """Return the standard output paths for one backtest run."""
     root = Path(output_dir) / f"{run_timestamp}_{slug}"
     root.mkdir(parents=True, exist_ok=True)
     filename_prefix = f"{run_timestamp}_{slug}"
     return (
+        root,
         root / f"{filename_prefix}_trades.csv",
         root / f"{filename_prefix}_summary.json",
         root / f"{filename_prefix}_chart.png",
@@ -772,6 +974,7 @@ def run_backtest(args: argparse.Namespace) -> None:
 
     analysis_start_utc = to_utc(analysis_start_local)
     analysis_end_utc = to_utc(analysis_end_local)
+    resolved_output_dir = resolve_output_dir(args)
 
     raw_df = download_data_range(
         args.symbol.upper(),
@@ -803,18 +1006,23 @@ def run_backtest(args: argparse.Namespace) -> None:
         "interval_override": args.interval,
         "resolved_interval": strategy.interval,
         "initial_equity": args.initial_equity,
-        "output_dir": args.output_dir,
+        "output_dir": resolved_output_dir,
+        "shared_run": bool(args.shared),
         "chart_enabled": not args.no_chart,
     }
     summary["resolved_strategy_config"] = strategy_config
 
     slug = make_run_slug(args.symbol.upper(), strategy.name, args.start, args.end)
     run_timestamp = make_run_timestamp()
-    trades_csv_path, summary_json_path, chart_path = build_output_paths(args.output_dir, slug, run_timestamp)
+    run_root, trades_csv_path, summary_json_path, chart_path = build_output_paths(
+        resolved_output_dir,
+        slug,
+        run_timestamp,
+    )
     trades_df.to_csv(trades_csv_path, index=False)
-    summary_json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     saved_chart_path = None
+    saved_trade_chart_paths: list[Path] = []
     if not args.no_chart:
         saved_chart_path = plot_backtest_chart(
             prepared_df=prepared_df,
@@ -825,6 +1033,15 @@ def run_backtest(args: argparse.Namespace) -> None:
             summary=summary,
             output_path=chart_path,
         )
+        saved_trade_chart_paths = plot_trade_zoom_charts(
+            prepared_df=prepared_df,
+            trades_df=trades_df,
+            output_dir=run_root / "trade_charts",
+        )
+
+    summary["trade_chart_count"] = len(saved_trade_chart_paths)
+    summary["trade_chart_dir"] = None if not saved_trade_chart_paths else str((run_root / "trade_charts"))
+    summary_json_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print_summary(summary, trades_csv_path=trades_csv_path, summary_json_path=summary_json_path, chart_path=saved_chart_path)
 
