@@ -238,3 +238,10 @@ Focus on capturing decision and intent.
 **Decision:** Use the current best-tested NVDA exploratory baseline of `ema_band_window = 72`, `require_pullback_breakout = true`, and `pullback_breakout_lookback = 3` for the next round of chart review and exit-focused research. Keep this as a working research baseline rather than a permanent final configuration until additional review is completed.  
 **Reasoning:** A one-parameter backtest sweep on `ema_band_window` improved behavior noticeably over the prior `200`-bar EMA band, especially by avoiding the previously identified April 1 short failure and producing a stronger long interpretation instead. A follow-up sweep showed that adding breakout confirmation helped reduce low-quality entries, and a smaller breakout lookback of `3` outperformed stricter values like `5`, `8`, and `10`. This suggests the strategy benefits from light price-structure confirmation without waiting so long that the continuation move is already mostly spent.  
 **Approved by:** Joshua  
+
+## D-031
+**Date:** 2026-04-08  
+**Topic:** Info Dashboard, XGBoost, and Report Writeup  
+**Decision:** Splitting tasks between team members, where Havanna works on Info Dashboard, whilst Cooper and Ulysses work on XGBoost and the Report Writeup.  
+**Reasoning:** An Info Dashboard is useful for observing data collected from our backtest runs and paper trading. XGBoost is a useful next step, allowing us to optimize our strategies. And we're nearing the time to write the reports. Splitting these tasks between our group members allows me(Joshua) to focus on designing the core functions of the bot.  
+**Approved by:** Joshua, Ulysses, Havanna, Cooper  
