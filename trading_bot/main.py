@@ -1,9 +1,18 @@
 """Runs the trading bot workflow from data download through order decisions."""
 
-import time
 import pandas as pd
+import time
 
-from trading_bot.broker import connect_alpaca, get_account, get_market_clock, market_is_open
+from trading_bot.broker import (
+    connect_alpaca,
+    get_account,
+    get_all_positions,
+    get_asset,
+    get_asset_flags,
+    get_market_clock,
+    get_position_market_value,
+    market_is_open,
+)
 from trading_bot.config import BotConfig, SymbolAssignment, load_config
 from trading_bot.data import download_data
 from trading_bot.decision_logging import (
@@ -20,6 +29,7 @@ from trading_bot.execution import (
     submit_and_track_order,
     cancel_stop_orders_if_needed,
     handle_strategy_actions,
+    reconcile_missing_protective_stop,
 )
 from trading_bot.risk import (
     build_exit_levels_for_live_position,
@@ -29,7 +39,13 @@ from trading_bot.risk import (
     should_exit_position,
 )
 from trading_bot.strategies.base import PositionContext
-from trading_bot.state import get_active_exit_levels, get_live_broker_state
+from trading_bot.state import (
+    clear_active_exit_levels,
+    get_active_exit_levels,
+    get_live_broker_state,
+    load_session_state,
+    set_active_exit_levels,
+)
 
 
 def print_metrics(metrics: dict) -> None:
@@ -65,7 +81,157 @@ def build_live_position_context(df, live_state: dict, active_exit_levels: dict |
     )
 
 
-def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, symbol_config: SymbolAssignment) -> None:
+def summarize_stop_state(
+    live_state: dict,
+    active_exit_levels: dict | None,
+    reconciliation_status: str | None = None,
+) -> str:
+    """Return a short stop summary for console output."""
+    protective_stop_order = live_state["protective_stop_order"]
+    if protective_stop_order is not None:
+        stop_side = serialize_value(getattr(protective_stop_order, "side", ""))
+        stop_price = serialize_value(getattr(protective_stop_order, "stop_price", ""))
+        return f"broker:{stop_side}@{stop_price}"
+
+    if live_state["stop_orders"]:
+        return f"unmatched_open_stops={len(live_state['stop_orders'])}"
+
+    if active_exit_levels is not None and active_exit_levels.get("stop_price") is not None:
+        label = "reconciled" if reconciliation_status == "protective_stop_reconciled" else "derived"
+        return f"{label}@{float(active_exit_levels['stop_price']):.2f}"
+
+    return "none"
+
+
+def format_symbol_label(symbol: str, width: int) -> str:
+    """Pad symbols to a fixed width so console summaries line up cleanly."""
+    return f"{symbol:<{width}}"
+
+
+def print_cycle_summary(results: list[dict]) -> None:
+    """Print a compact multi-symbol summary after each full cycle."""
+    if not results:
+        return
+
+    symbol_width = max(len(str(result["symbol"])) for result in results)
+    print("\nCycle summary:")
+    for result in results:
+        print(
+            f"{format_symbol_label(str(result['symbol']), symbol_width)} | {result['strategy']} | close={result['latest_close']} | "
+            f"signal={result['signal']} | position={result['position']} | market={result['market']} | "
+            f"decision={result['decision']}:{result['reason']} | stop={result['stop']}"
+        )
+
+
+def current_portfolio_exposure_value(trading_client) -> float:
+    """Return the absolute market value currently deployed across open positions."""
+    return sum(get_position_market_value(position) for position in get_all_positions(trading_client))
+
+
+def projected_portfolio_exposure_fraction(
+    *,
+    trading_client,
+    buying_power: float,
+    latest_close: float,
+    entry_qty: int,
+) -> tuple[float, float, float]:
+    """Estimate current and projected exposure as fractions of buying power."""
+    current_exposure_value = current_portfolio_exposure_value(trading_client)
+    projected_exposure_value = current_exposure_value + (latest_close * entry_qty)
+    denominator = buying_power if buying_power > 0 else 1.0
+    return (
+        current_exposure_value,
+        current_exposure_value / denominator,
+        projected_exposure_value / denominator,
+    )
+
+
+def evaluate_entry_safeguards(
+    *,
+    trading_client,
+    symbol: str,
+    action: str,
+    latest_close: float,
+    entry_qty: int,
+    buying_power: float,
+    risk_settings,
+) -> tuple[str | None, dict]:
+    """Return an optional block reason plus asset/exposure metadata for a candidate entry."""
+    asset = get_asset(trading_client, symbol)
+    asset_flags = get_asset_flags(asset)
+    current_exposure_value, current_exposure_fraction, projected_exposure_fraction = projected_portfolio_exposure_fraction(
+        trading_client=trading_client,
+        buying_power=buying_power,
+        latest_close=latest_close,
+        entry_qty=entry_qty,
+    )
+    metadata = {
+        "asset_flags": asset_flags,
+        "current_exposure_value": current_exposure_value,
+        "current_exposure_fraction": current_exposure_fraction,
+        "projected_exposure_fraction": projected_exposure_fraction,
+    }
+
+    if not asset_flags["tradable"]:
+        return "asset_not_tradable", metadata
+
+    if action == "SELL" and not (asset_flags["shortable"] and asset_flags["easy_to_borrow"]):
+        return "asset_not_shortable", metadata
+
+    exposure_cap = risk_settings.max_total_position_fraction_of_buying_power
+    if exposure_cap > 0 and projected_exposure_fraction > exposure_cap:
+        return "portfolio_exposure_cap_reached", metadata
+
+    return None, metadata
+
+
+def print_preflight_report(trading_client, config: BotConfig, session_state: dict) -> None:
+    """Print a startup preflight summary before the live trading loop begins."""
+    print("\nPreflight:")
+    symbol_width = max(len(symbol_config.ticker) for symbol_config in config.symbols) if config.symbols else 1
+
+    account = get_account(trading_client)
+    if account is None:
+        print("Account: unavailable")
+    else:
+        buying_power = float(account.buying_power)
+        print(
+            "Account: "
+            f"status={serialize_value(account.status)} | buying_power={buying_power:.2f} | "
+            f"trading_blocked={bool(getattr(account, 'trading_blocked', False))}"
+        )
+
+    market_clock = get_market_clock(trading_client)
+    if market_clock is None:
+        print("Market: unavailable")
+    else:
+        print(
+            "Market: "
+            f"is_open={bool(getattr(market_clock, 'is_open', False))} | "
+            f"timestamp={serialize_value(getattr(market_clock, 'timestamp', ''))}"
+        )
+
+    for symbol_config in config.symbols:
+        symbol = symbol_config.ticker
+        strategy = symbol_config.strategy
+        live_state = get_live_broker_state(trading_client, symbol)
+        if live_state["is_flat"]:
+            clear_active_exit_levels(session_state, symbol)
+        asset_flags = get_asset_flags(get_asset(trading_client, symbol))
+        stop_summary = summarize_stop_state(
+            live_state,
+            get_active_exit_levels(session_state, symbol),
+        )
+        print(
+            f"{format_symbol_label(symbol, symbol_width)} | {strategy.name}@{strategy.version} | "
+            f"position={'flat' if live_state['is_flat'] else f'{live_state['position_side']} x{live_state['position_qty']}'} | "
+            f"tradable={asset_flags['tradable']} | shortable={asset_flags['shortable']} | "
+            f"etb={asset_flags['easy_to_borrow']} | stop={stop_summary} | "
+            f"working_orders={len(live_state['working_orders'])}"
+        )
+
+
+def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, symbol_config: SymbolAssignment) -> dict:
     """Run one full bot cycle for a single configured symbol."""
     # Get the current symbol and its assigned strategy from the config.
     symbol = symbol_config.ticker
@@ -75,41 +241,54 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         strategy.version,
         strategy.interval,
     )
+    summary = {
+        "symbol": symbol,
+        "strategy": f"{strategy.name}@{strategy.version}",
+        "latest_close": "?",
+        "signal": "?",
+        "position": "unknown",
+        "market": "unknown",
+        "decision": "",
+        "reason": "",
+        "stop": "unknown",
+    }
+
+    def finish(action: str, reason: str, **updates) -> dict:
+        summary.update(updates)
+        summary["decision"] = action
+        summary["reason"] = reason
+        print(f"Decision: {action} | reason={reason}")
+        return summary
 
     # Download recent market data needed to evaluate the strategy.
     print(f"\n=== {symbol} | {strategy.name}@{strategy.version} ===")
-    print("\nDownloading market data from Alpaca...")
+    print("Downloading market data from Alpaca...")
     try:
         raw_df = download_data(symbol, strategy.interval, strategy.lookback_bars)
     except ValueError as exc:
         print(exc)
-        return
+        return finish("ERROR", "data_download_value_error")
     except Exception as exc:
         print(f"Error downloading data: {exc}")
-        return
+        return finish("ERROR", "data_download_failed")
 
     min_required_bars = strategy.min_required_bars()
-    print(f"Downloaded {len(raw_df)} raw bars for {symbol} at {strategy.interval}.")
 
     # Stop this cycle if Alpaca returned no market data.
     if raw_df.empty:
         print("Alpaca returned no bars for this request.")
-        return
+        return finish("ERROR", "no_market_data")
 
     # Record the time range covered by the downloaded bars.
     first_bar_timestamp = raw_df.index.min()
     last_bar_timestamp = raw_df.index.max()
-    print(
-        "Bar time range: "
-        f"{first_bar_timestamp.isoformat()} -> {last_bar_timestamp.isoformat()}"
-    )
 
     # Prepare the raw price data so the strategy can evaluate its signals.
     df = strategy.prepare_dataframe(raw_df)
     print(
-        "Prepared "
-        f"{len(df)} strategy rows after warmup "
-        f"(minimum raw bars needed: {min_required_bars})."
+        "Data ready: "
+        f"raw={len(raw_df)} | prepared={len(df)} | interval={strategy.interval} | "
+        f"bars={first_bar_timestamp.isoformat()} -> {last_bar_timestamp.isoformat()}"
     )
 
     # Stop this cycle if there are not enough prepared rows to evaluate the strategy.
@@ -119,33 +298,35 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             f"Need at least {min_required_bars} raw bars for {strategy.name}, "
             f"but received {len(raw_df)}."
         )
-        return
-
-    # Show the most recent strategy values and summary performance metrics.
-    print("\nRecent strategy data:")
-    print(df[strategy.recent_display_columns()].tail(8))
-
-    metrics = strategy.calculate_backtest_metrics(df)
-    print_metrics(metrics)
+        return finish("ERROR", "not_enough_data")
 
     # Pull the latest row so the bot can inspect the current signal state.
     latest = df.iloc[-1]
     latest_close = float(latest["Close"])
     latest_event_key = strategy.event_key(latest)
     latest_signal_value = strategy.latest_signal_value(latest)
-
-    print(f"\nLatest close: {latest_close:.2f}")
-    print(f"{strategy.latest_signal_label()}: {latest_signal_value}")
+    summary["latest_close"] = f"{latest_close:.2f}"
+    summary["signal"] = str(latest_signal_value)
 
     # Get the account so position sizing can use live buying power.
     account = get_account(trading_client)
     if account is None:
         print("Could not retrieve account. Exiting.")
-        return
+        return finish("ERROR", "account_lookup_failed")
 
     buying_power = float(account.buying_power)
-    print(f"Account status: {account.status}")
-    print(f"Buying power: {buying_power:.2f}")
+    exposure_metadata = {
+        "asset_flags": {
+            "tradable": False,
+            "shortable": False,
+            "easy_to_borrow": False,
+            "marginable": False,
+            "fractionable": False,
+        },
+        "current_exposure_value": current_portfolio_exposure_value(trading_client),
+        "current_exposure_fraction": 0.0,
+        "projected_exposure_fraction": 0.0,
+    }
 
     # Check the symbol's current live broker state before making a new decision.
     live_state = get_live_broker_state(trading_client, symbol)
@@ -153,7 +334,10 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
     position_side = live_state["position_side"]
     position_qty = live_state["position_qty"]
     entry_price = live_state["entry_price"]
+    if live_state["is_flat"]:
+        clear_active_exit_levels(session_state, symbol)
     active_exit_levels = None
+    stop_reconciliation_status = None
     if position_side in {"long", "short"} and entry_price is not None:
         active_exit_levels = build_exit_levels_for_live_position(
             entry_price=entry_price,
@@ -164,19 +348,37 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             active_exit_levels=get_active_exit_levels(session_state, symbol),
             risk_reward_multiple=strategy.risk_reward_multiple(),
         )
+        if active_exit_levels is not None:
+            set_active_exit_levels(session_state, symbol, active_exit_levels)
+        stop_reconciliation_status = reconcile_missing_protective_stop(
+            trading_client=trading_client,
+            symbol=symbol,
+            live_state=live_state,
+            active_exit_levels=active_exit_levels,
+            enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
+        )
+        if stop_reconciliation_status == "protective_stop_reconciled":
+            live_state = get_live_broker_state(trading_client, symbol)
+            in_position = live_state["in_position"]
+            position_side = live_state["position_side"]
+            position_qty = live_state["position_qty"]
+            entry_price = live_state["entry_price"]
+            active_exit_levels = build_exit_levels_for_live_position(
+                entry_price=entry_price,
+                position_side=position_side,
+                stop_loss_pct=config.risk.stop_loss_pct,
+                take_profit_pct=config.risk.take_profit_pct,
+                protective_stop_order=live_state["protective_stop_order"],
+                active_exit_levels=get_active_exit_levels(session_state, symbol),
+                risk_reward_multiple=strategy.risk_reward_multiple(),
+            )
+            if active_exit_levels is not None:
+                set_active_exit_levels(session_state, symbol, active_exit_levels)
+
     position_context = build_live_position_context(df, live_state, active_exit_levels)
     strategy_entry_action = strategy.entry_action(latest)
     strategy_exit_action = strategy.exit_action(latest, position_context)
     strategy_exit_reason = strategy.exit_reason(latest, position_context)
-    print(f"Current position for {symbol}: {position_side} (qty={position_qty})")
-    if live_state["protective_stop_order"] is not None:
-        stop_price = serialize_value(getattr(live_state["protective_stop_order"], "stop_price", ""))
-        stop_side = serialize_value(getattr(live_state["protective_stop_order"], "side", ""))
-        print(f"Protective stop currently active at Alpaca: side={stop_side}, stop={stop_price}")
-    elif live_state["stop_orders"]:
-        print(f"Open stop orders at Alpaca without an active matching position stop: {len(live_state['stop_orders'])}")
-    if live_state["blocking_orders"]:
-        print(f"Non-protective working orders at Alpaca: {len(live_state['blocking_orders'])}")
 
     # Check whether the market is currently open before allowing live orders.
     market_clock = get_market_clock(trading_client)
@@ -186,6 +388,17 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         flatten_before_close=config.risk.flatten_before_close,
         flatten_minutes_before_close=config.risk.flatten_minutes_before_close,
     )
+    summary["position"] = "flat" if not in_position else f"{position_side} x{position_qty}"
+    summary["market"] = "open" if current_market_open else "closed"
+    summary["stop"] = summarize_stop_state(live_state, active_exit_levels, stop_reconciliation_status)
+    print(
+        "Snapshot: "
+        f"close={latest_close:.2f} | signal={latest_signal_value} | position={summary['position']} | "
+        f"market={summary['market']} | stop={summary['stop']} | "
+        f"buying_power={buying_power:.2f}"
+    )
+    if live_state["blocking_orders"]:
+        print(f"Non-protective working orders at Alpaca: {len(live_state['blocking_orders'])}")
 
     # Build the decision and strategy-context log rows for this cycle.
     def log_decision_for_cycle(action: str, reason: str, qty: int = 0, market_open=None) -> str:
@@ -260,8 +473,32 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         )
         return log_decision_event(decision_row=decision_row, strategy_context_row=strategy_context_row)
 
+    def guard_new_entry(action: str, qty: int, market_open: bool) -> dict | None:
+        nonlocal exposure_metadata
+        block_reason, exposure_metadata = evaluate_entry_safeguards(
+            trading_client=trading_client,
+            symbol=symbol,
+            action=action,
+            latest_close=latest_close,
+            entry_qty=qty,
+            buying_power=buying_power,
+            risk_settings=config.risk,
+        )
+        if block_reason is None:
+            return None
+
+        asset_flags = exposure_metadata["asset_flags"]
+        print(
+            "Entry blocked: "
+            f"reason={block_reason} | tradable={asset_flags['tradable']} | "
+            f"shortable={asset_flags['shortable']} | etb={asset_flags['easy_to_borrow']} | "
+            f"projected_exposure={exposure_metadata['projected_exposure_fraction']:.4f}"
+        )
+        log_decision_for_cycle("HOLD", block_reason, market_open=market_open)
+        return finish("HOLD", block_reason)
+
     # Resolve any previously submitted order before evaluating fresh trade signals.
-    if handle_pending_order_state(
+    pending_state_result = handle_pending_order_state(
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
@@ -275,12 +512,13 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         take_profit_pct=config.risk.take_profit_pct,
         enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
         serialize_value=serialize_value,
-    ):
-        return
+    )
+    if pending_state_result is not None:
+        return finish(*pending_state_result)
 
     if current_market_open and flatten_window_active:
         print("Inside the configured pre-close flatten window.")
-        if handle_flatten_before_close(
+        flatten_result = handle_flatten_before_close(
             trading_client=trading_client,
             session_state=session_state,
             symbol=symbol,
@@ -297,8 +535,9 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             take_profit_pct=config.risk.take_profit_pct,
             enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
             serialize_value=serialize_value,
-        ):
-            return
+        )
+        if flatten_result is not None:
+            return finish(*flatten_result)
 
     # Force-test mode bypasses normal strategy logic and submits the configured action.
     if config.execution.force_test_trade:
@@ -308,20 +547,20 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         if not current_market_open:
             print("Market is closed. Forced order not sent.")
             log_decision_for_cycle("HOLD", "market_closed_force_mode", market_open=False)
-            return
+            return finish("HOLD", "market_closed_force_mode")
 
         # In force BUY mode, enter a position if one is not already open.
         if config.execution.force_direction.upper() == "BUY":
             if position_side == "long":
                 print("Already in a long position. Force BUY skipped.")
                 log_decision_for_cycle("HOLD", "force_buy_skipped_long_position", market_open=True)
-                return
+                return finish("HOLD", "force_buy_skipped_long_position")
 
             if position_side == "flat":
                 if live_state["stop_orders"]:
                     print("Flat symbol still has stop orders at Alpaca. Forced BUY paused.")
                     log_decision_for_cycle("HOLD", "stale_protective_stop_exists", market_open=True)
-                    return
+                    return finish("HOLD", "stale_protective_stop_exists")
                 qty = calculate_order_qty(
                     latest_close,
                     buying_power,
@@ -345,7 +584,15 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                         else str(entry_risk_plan["rejection_reason"]),
                         market_open=True,
                     )
-                    return
+                    return finish(
+                        "HOLD",
+                        "invalid_entry_risk_plan"
+                        if entry_risk_plan is None or not entry_risk_plan.get("rejection_reason")
+                        else str(entry_risk_plan["rejection_reason"]),
+                    )
+                blocked_entry = guard_new_entry("BUY", qty, True)
+                if blocked_entry is not None:
+                    return blocked_entry
             else:
                 qty = position_qty
                 resulting_side = "flat"
@@ -377,20 +624,20 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                 entry_risk_plan=entry_risk_plan,
                 signal_time=latest.name.isoformat() if hasattr(latest.name, "isoformat") else str(latest.name),
             )
-            return
+            return finish("BUY", "forced_test_trade")
 
         # In force SELL mode, close the current position if one exists.
         if config.execution.force_direction.upper() == "SELL":
             if position_side == "short":
                 print("Already in a short position. Force SELL skipped.")
                 log_decision_for_cycle("HOLD", "force_sell_skipped_short_position", market_open=True)
-                return
+                return finish("HOLD", "force_sell_skipped_short_position")
 
             if position_side == "flat":
                 if live_state["stop_orders"]:
                     print("Flat symbol still has stop orders at Alpaca. Forced SELL paused.")
                     log_decision_for_cycle("HOLD", "stale_protective_stop_exists", market_open=True)
-                    return
+                    return finish("HOLD", "stale_protective_stop_exists")
                 qty = calculate_order_qty(
                     latest_close,
                     buying_power,
@@ -414,7 +661,15 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                         else str(entry_risk_plan["rejection_reason"]),
                         market_open=True,
                     )
-                    return
+                    return finish(
+                        "HOLD",
+                        "invalid_entry_risk_plan"
+                        if entry_risk_plan is None or not entry_risk_plan.get("rejection_reason")
+                        else str(entry_risk_plan["rejection_reason"]),
+                    )
+                blocked_entry = guard_new_entry("SELL", qty, True)
+                if blocked_entry is not None:
+                    return blocked_entry
             else:
                 qty = position_qty
                 resulting_side = "flat"
@@ -446,21 +701,21 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                 entry_risk_plan=entry_risk_plan,
                 signal_time=latest.name.isoformat() if hasattr(latest.name, "isoformat") else str(latest.name),
             )
-            return
+            return finish("SELL", "forced_test_trade")
 
         print("FORCE_DIRECTION must be BUY or SELL.")
         log_decision_for_cycle("HOLD", "invalid_force_direction", market_open=True)
-        return
+        return finish("HOLD", "invalid_force_direction")
 
     # Skip live trading when the market is closed.
     if not current_market_open:
         print("Market is closed. No live order submitted.")
         log_decision_for_cycle("HOLD", "market_closed", market_open=False)
-        return
+        return finish("HOLD", "market_closed")
 
     # Check risk-based exit conditions first so an existing position can be
     # closed before considering any new entry on this cycle.
-    if handle_exit_triggers(
+    exit_trigger_result = handle_exit_triggers(
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
@@ -480,12 +735,24 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         order_status_timeout_seconds=config.execution.order_status_timeout_seconds,
         enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
         serialize_value=serialize_value,
-    ):
-        return
+    )
+    if exit_trigger_result is not None:
+        return finish(*exit_trigger_result)
+
+    if position_side == "flat" and strategy_entry_action in {"BUY", "SELL"}:
+        entry_qty = calculate_order_qty(
+            latest_close,
+            buying_power,
+            config.risk.risk_fraction_of_buying_power,
+            config.risk.max_position_qty,
+        )
+        blocked_entry = guard_new_entry(strategy_entry_action, entry_qty, True)
+        if blocked_entry is not None:
+            return blocked_entry
 
     # If no risk-based exit was needed, check whether the strategy signals
     # call for entering or exiting a position for this symbol.
-    if handle_strategy_actions(
+    strategy_action_result = handle_strategy_actions(
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
@@ -510,31 +777,59 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         enable_broker_side_stop_loss=config.execution.enable_broker_side_stop_loss,
         serialize_value=serialize_value,
         signal_time=latest.name.isoformat() if hasattr(latest.name, "isoformat") else str(latest.name),
-    ):
-        return
+    )
+    if strategy_action_result is not None:
+        return finish(*strategy_action_result)
 
     # If no action was needed, record a HOLD decision for this cycle.
     print("No trade this cycle.")
     log_decision_for_cycle("HOLD", "no_trade", market_open=True)
+    return finish("HOLD", "no_trade")
 
 
-def run_cycle(session_state: dict, trading_client, config: BotConfig) -> None:
+def run_cycle(session_state: dict, trading_client, config: BotConfig) -> list[dict]:
     """Run one full bot cycle for every configured symbol."""
     # Run one symbol cycle for each configured ticker.
+    results = []
     for symbol_config in config.symbols:
-        run_symbol_cycle(session_state, trading_client, config, symbol_config)
+        try:
+            results.append(run_symbol_cycle(session_state, trading_client, config, symbol_config))
+        except Exception as exc:
+            print(f"\n=== {symbol_config.ticker} | {symbol_config.strategy.name}@{symbol_config.strategy.version} ===")
+            print(f"Unhandled symbol-cycle error: {exc}")
+            results.append(
+                {
+                    "symbol": symbol_config.ticker,
+                    "strategy": f"{symbol_config.strategy.name}@{symbol_config.strategy.version}",
+                    "latest_close": "?",
+                    "signal": "?",
+                    "position": "unknown",
+                    "market": "unknown",
+                    "decision": "ERROR",
+                    "reason": "symbol_cycle_exception",
+                    "stop": "unknown",
+                }
+            )
+    print_cycle_summary(results)
+    return results
 
 
 def run() -> None:
     """Run the bot once or keep polling until the user stops it."""
     config = load_config()
-    session_state = {}
+    session_state = load_session_state()
 
     # Connect to Alpaca using the configured trading mode.
     try:
         trading_client = connect_alpaca(paper=config.bot.paper_trading)
     except ValueError as exc:
         print(exc)
+        return
+
+    print_preflight_report(trading_client, config, session_state)
+
+    if config.bot.preflight_only:
+        print("Preflight-only mode is enabled. Exiting without running a trading cycle.")
         return
 
     # In single-run mode, execute one cycle and exit.

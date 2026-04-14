@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import tomllib
 
-from trading_bot.strategies import create_strategy
+from trading_bot.strategies import create_strategy, default_strategy_config
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,7 @@ class BotSettings:
     run_continuously: bool
     poll_interval_seconds: int
     paper_trading: bool
+    preflight_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class RiskSettings:
     take_profit_pct: float
     flatten_before_close: bool
     flatten_minutes_before_close: int
+    max_total_position_fraction_of_buying_power: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,12 @@ def load_config(path: str = "bot_config.toml") -> BotConfig:
     symbols = [
         SymbolAssignment(
             ticker=entry["ticker"],
-            strategy=create_strategy(entry["strategy"]),
+            strategy=create_strategy(
+                {
+                    **default_strategy_config(entry["strategy"]["name"]),
+                    **entry["strategy"],
+                }
+            ),
         )
         for entry in raw["symbols"]
     ]

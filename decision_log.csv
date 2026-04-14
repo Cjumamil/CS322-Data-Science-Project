@@ -1,0 +1,6 @@
+decision_id,timestamp,bot_version,symbol,strategy,strategy_version,interval,action,reason,latest_close,entry_price,buying_power,in_position,position_side,position_qty,qty,market_is_open,force_test_trade,force_direction
+e1bd0961c25e4ddc895a0abe5a764511,2026-04-14T07:42:53Z,0.3.0,AAPL,sma_crossover,v1,1m,HOLD,market_closed,259.22,,199151.83,False,flat,0,0,False,False,SELL
+db14dc1cffb747fb888d44f19c58a64c,2026-04-14T07:43:40Z,0.3.0,AAPL,sma_crossover,v1,1m,HOLD,market_closed,259.22,,199151.83,False,flat,0,0,False,False,SELL
+399ac31d3bcf4bd7a09c221e04e1a72d,2026-04-14T07:43:42Z,0.3.0,ALB,macd_pullback,v2,5m,HOLD,market_closed,185.39,178.36,199151.83,True,long,5,0,False,False,SELL
+a6a4051aa9e840c4958c939e54bb81fe,2026-04-14T07:43:43Z,0.3.0,MSFT,macd_pullback,v2,5m,HOLD,market_closed,384.33,,199151.83,False,flat,0,0,False,False,SELL
+7566fc350b0443848c25920edead9085,2026-04-14T07:43:44Z,0.3.0,NVDA,macd_pullback,v2,5m,HOLD,market_closed,189.49,,199151.83,False,flat,0,0,False,False,SELL

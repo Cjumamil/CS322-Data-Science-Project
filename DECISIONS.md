@@ -259,3 +259,17 @@ Focus on capturing decision and intent.
 **Decision:** Promote the tuned NVDA `macd_pullback` settings to the working baseline and align `macd_pullback` defaults to match, so new symbols start from the same improved configuration. The active baseline includes: `ema_band_window=72`, `require_pullback_breakout=true`, `pullback_breakout_lookback=3`, `max_stop_distance_frac_of_price=0.04`, `enable_time_stop=true`, `max_bars_in_trade=30`, `enable_macd_failure_exit=true`, `min_bars_before_macd_exit=10`, `macd_exit_slope_lookback=2`, `macd_exit_min_slope_frac_of_price=0.0008`, `macd_exit_requires_histogram_confirmation=true`, and `macd_exit_requires_ema12_confirmation=false`.  
 **Reasoning:** Multi-year sweeps showed this setup balanced return, profit factor, and practical exit activity better than stricter or looser alternatives. In particular, very high MACD slope thresholds produced strong headline stats but almost no `macd_failure` exits, while this baseline kept exits meaningfully active without becoming trigger-happy. A cross-check on MSFT with matched settings also preferred `macd_exit_slope_lookback=2`, supporting generalization beyond NVDA. Additional sweeps confirmed that raising `max_stop_distance_frac_of_price` above `0.04` did not improve results.  
 **Approved by:** Joshua  
+
+## D-034
+**Date:** 2026-04-14  
+**Topic:** Paper-Trading Readiness Hardening  
+**Decision:** Add a startup preflight report, per-symbol exception isolation, broker-side protective-stop reconciliation for inherited live positions, shortability/ETB entry checks, a portfolio exposure cap, and persisted lightweight live session state.  
+**Reasoning:** The bot was close to paper-trading readiness, but the first supervised runs still needed stronger operational safety around restarts, missing broker stops, short eligibility, and multi-symbol failure handling. These additions reduce avoidable runtime surprises while keeping Alpaca as the operational source of truth.  
+**Approved by:** Joshua  
+
+## D-035
+**Date:** 2026-04-14  
+**Topic:** Default-Inherited Symbol Configuration  
+**Decision:** Make per-symbol strategy configs inherit built-in strategy defaults, and keep inactive expansion symbols commented in `bot_config.toml` so they can be re-enabled quickly without rewriting full parameter blocks.  
+**Reasoning:** The project is expected to scale to a larger symbol universe, and hand-defining every strategy parameter for each symbol would make the config hard to maintain. Default inheritance keeps the active config lightweight while still allowing symbol-specific overrides when needed.  
+**Approved by:** Joshua  

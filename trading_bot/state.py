@@ -1,5 +1,7 @@
 """Maintains lightweight session helpers and live broker state snapshots."""
 
+import json
+from pathlib import Path
 from typing import Any
 
 from trading_bot.broker import (
@@ -13,6 +15,32 @@ from trading_bot.broker import (
     get_working_orders,
     is_final_order_status,
 )
+
+SESSION_STATE_PATH = Path("live_session_state.json")
+
+
+def load_session_state(path: Path = SESSION_STATE_PATH) -> dict:
+    """Load persisted lightweight live-trade state from disk."""
+    if not path.exists():
+        return {}
+
+    try:
+        with path.open("r", encoding="utf-8") as state_file:
+            data = json.load(state_file)
+    except (OSError, ValueError) as exc:
+        print(f"Could not load persisted session state: {exc}")
+        return {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def persist_session_state(session_state: dict, path: Path = SESSION_STATE_PATH) -> None:
+    """Persist lightweight live-trade state so restarts keep context."""
+    try:
+        with path.open("w", encoding="utf-8") as state_file:
+            json.dump(session_state, state_file, indent=2, sort_keys=True)
+    except OSError as exc:
+        print(f"Could not persist session state: {exc}")
 
 
 def get_symbol_session_state(session_state: dict, symbol: str) -> dict:
@@ -90,6 +118,7 @@ def record_submitted_action(
     symbol_state["pending_position_side_after"] = position_side_after
     symbol_state["pending_entry_risk_plan"] = entry_risk_plan
     symbol_state["pending_signal_time"] = signal_time
+    persist_session_state(session_state)
 
 
 def clear_pending_order(session_state: dict, symbol: str) -> None:
@@ -105,6 +134,7 @@ def clear_pending_order(session_state: dict, symbol: str) -> None:
     symbol_state["pending_position_side_after"] = "flat"
     symbol_state["pending_entry_risk_plan"] = None
     symbol_state["pending_signal_time"] = None
+    persist_session_state(session_state)
 
 
 def set_active_exit_levels(session_state: dict, symbol: str, exit_levels: dict | None) -> None:
@@ -119,6 +149,7 @@ def set_active_exit_levels(session_state: dict, symbol: str, exit_levels: dict |
         symbol_state["active_stop_distance"] = None
         symbol_state["active_stop_distance_frac_of_price"] = None
         symbol_state["active_max_stop_distance_frac_of_price"] = None
+        persist_session_state(session_state)
         return
 
     symbol_state["active_stop_price"] = exit_levels.get("stop_price")
@@ -129,6 +160,7 @@ def set_active_exit_levels(session_state: dict, symbol: str, exit_levels: dict |
     symbol_state["active_stop_distance"] = exit_levels.get("stop_distance")
     symbol_state["active_stop_distance_frac_of_price"] = exit_levels.get("stop_distance_frac_of_price")
     symbol_state["active_max_stop_distance_frac_of_price"] = exit_levels.get("max_stop_distance_frac_of_price")
+    persist_session_state(session_state)
 
 
 def clear_active_exit_levels(session_state: dict, symbol: str) -> None:

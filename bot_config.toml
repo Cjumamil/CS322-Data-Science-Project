@@ -5,6 +5,7 @@ version = "0.3.0"
 run_continuously = true
 poll_interval_seconds = 60 # Seconds to wait between full multi-symbol polling cycles.
 paper_trading = true
+preflight_only = true # When true, print the startup readiness report and exit without trading.
 
 # Execution/mechanical behavior rather than signal logic.
 [execution]
@@ -22,191 +23,82 @@ stop_loss_pct = 0.03
 take_profit_pct = 0.06
 flatten_before_close = true # Use to prevent holding positions overnight
 flatten_minutes_before_close = 5
+max_total_position_fraction_of_buying_power = 0.08 # Block new entries when total deployed exposure would exceed this fraction of buying power.
 
-# One `[[symbols]]` block per stock. Each symbol currently has one active strategy.
-[[symbols]]
-ticker = "AAPL"
-
-# Strategy config is nested under the most recent `[[symbols]]` entry.
-[symbols.strategy]
-name = "sma_crossover"
-version = "v1" # Strategy-logic version, separate from the overall bot version.
-interval = "1m" # Candle interval used for market data and indicator calculations.
-lookback_bars = 1000 # Raw bars requested before indicator warmup rows are dropped.
-fast_window = 8 # SMA fast window for the current SMA crossover strategy.
-slow_window = 20 # SMA slow window for the current SMA crossover strategy.
-
-[[symbols]]
-ticker = "ALB"
-
-[symbols.strategy]
-name = "macd_pullback"
-version = "v2"
-
-# Candle interval for this symbol only. If you omit --interval in the backtest
-# command, the symbol's configured interval here is what gets used.
-interval = "5m"
-
-# Number of raw bars to fetch before the analysis window so indicators have
-# enough history to warm up.
-lookback_bars = 700
-
-# Core EMA and MACD settings used for the local pullback/re-entry logic.
-ema_fast_window = 12
-ema_slow_window = 26
-macd_fast_window = 12
-macd_slow_window = 26
-macd_signal_window = 9
-
-# EMA band used as the higher-level trend filter and stop placement anchor.
-ema_band_window = 200
-
-# Skip the first N bars after the regular market open to avoid the noisiest
-# opening candles.
-opening_no_trade_bars = 6
-
-# Trend qualification: how many recent bars must stay above/below the EMA200
-# band, and over what lookback the band slope is measured.
-trend_persistence_lookback = 12
-min_bars_above_band_for_long = 8
-min_bars_below_band_for_short = 8
-trend_slope_lookback = 12
-min_ema_band_slope_frac = 0.001
-
-# Sideways-market filter: if too many recent bars sit inside the EMA200 band,
-# entries are blocked because trend structure is considered weak/choppy.
-sideways_lookback = 12
-max_inside_band_bars = 9
-
-# Require a meaningful prior impulse before considering a pullback entry.
-require_prior_impulse = true
-prior_impulse_lookback = 20
-min_prior_impulse_frac_of_price = 0.01
-
-# Pullback memory/filtering: how long we remember a recent trend and pullback,
-# and how deep below/above the EMA200 band the pullback is allowed to go.
-pullback_memory_bars = 20
-max_bars_since_pullback_touch = 8
-max_pullback_band_overshoot_frac = 0.002
-
-# MACD context rules: longs only when MACD stays above zero, shorts only when
-# it stays below zero.
-require_macd_above_zero_for_long = true
-require_macd_below_zero_for_short = true
-
-# Re-entry confirmation rules after the pullback.
-require_histogram_reexpansion = true # Require histogram to improve in the trade direction.
-require_ema12_reclaim = true # Require price back above/below EMA12 before entry.
-require_ema26_reclaim = true # Require price back above/below EMA26 before entry.
-require_pullback_breakout = false # If true, also require a breakout of the recent pullback range.
-pullback_breakout_lookback = 5
-
-# Risk model: stop is placed just beyond the EMA200 band with a small buffer,
-# and target is measured as a multiple of that risk distance.
-ema_stop_buffer_pct = 0.001
-take_profit_risk_multiple = 1.5
-max_stop_distance_frac_of_price = 0.04 # Reject setups whose stop would be too far from entry.
-
-# Optional strategy-managed exits.
-enable_time_stop = true # Force an exit after max_bars_in_trade if the trade stalls.
-max_bars_in_trade = 30
-enable_macd_failure_exit = false # Exit early when MACD momentum clearly deteriorates against the trade.
-min_bars_before_macd_exit = 4 # Ignore the first N bars after entry before MACD failure exits can trigger.
-macd_exit_slope_lookback = 1 # Compare MACD against this many bars ago when measuring momentum deterioration.
-macd_exit_min_slope_frac_of_price = 0.0005 # Minimum MACD slope magnitude, as a fraction of price, required to trigger an exit.
-macd_exit_requires_histogram_confirmation = true # Require histogram to worsen in the exit direction too.
-macd_exit_requires_ema12_confirmation = true # Require price to lose EMA12 in the exit direction too.
+# One `[[symbols]]` block per stock. Strategy blocks inherit defaults from the
+# selected strategy name, so you only need to specify overrides when a symbol
+# should behave differently from the shared default.
+#
+# Quick activation workflow:
+# 1. Uncomment a `[[symbols]]` block and its `[symbols.strategy]` block.
+# 2. Keep only `name = "macd_pullback"` unless you intentionally want overrides.
+#
+# Expansion watchlist using the shared default `macd_pullback` settings:
+#
+# [[symbols]]
+# ticker = "AAPL"
+#
+# [symbols.strategy]
+# name = "macd_pullback"
+#
+# [[symbols]]
+# ticker = "AMD"
+#
+# [symbols.strategy]
+# name = "macd_pullback"
+#
+# [[symbols]]
+# ticker = "AMZN"
+#
+# [symbols.strategy]
+# name = "macd_pullback"
+#
+# [[symbols]]
+# ticker = "META"
+#
+# [symbols.strategy]
+# name = "macd_pullback"
+#
+# [[symbols]]
+# ticker = "SPY"
+#
+# [symbols.strategy]
+# name = "macd_pullback"
+#
+# [[symbols]]
+# ticker = "QQQ"
+#
+# [symbols.strategy]
+# name = "macd_pullback"
+#
+# [[symbols]]
+# ticker = "IWM"
+#
+# [symbols.strategy]
+# name = "macd_pullback"
+#
+# Legacy ALB experiment kept for reference:
+# [[symbols]]
+# ticker = "ALB"
+#
+# [symbols.strategy]
+# name = "macd_pullback"
+# ema_band_window = 200
+# require_pullback_breakout = false
+# enable_macd_failure_exit = false
+# min_bars_before_macd_exit = 4
+# macd_exit_slope_lookback = 1
+# macd_exit_min_slope_frac_of_price = 0.0005
+# macd_exit_requires_ema12_confirmation = true
 
 [[symbols]]
 ticker = "MSFT"
 
 [symbols.strategy]
 name = "macd_pullback"
-version = "v2"
-interval = "5m"
-lookback_bars = 700
-ema_fast_window = 12
-ema_slow_window = 26
-macd_fast_window = 12
-macd_slow_window = 26
-macd_signal_window = 9
-ema_band_window = 72
-opening_no_trade_bars = 6
-trend_persistence_lookback = 12
-min_bars_above_band_for_long = 8
-min_bars_below_band_for_short = 8
-trend_slope_lookback = 12
-min_ema_band_slope_frac = 0.001
-sideways_lookback = 12
-max_inside_band_bars = 9
-require_prior_impulse = true
-prior_impulse_lookback = 20
-min_prior_impulse_frac_of_price = 0.01
-pullback_memory_bars = 20
-max_bars_since_pullback_touch = 8
-max_pullback_band_overshoot_frac = 0.002
-require_macd_above_zero_for_long = true
-require_macd_below_zero_for_short = true
-require_histogram_reexpansion = true
-require_ema12_reclaim = true
-require_ema26_reclaim = true
-require_pullback_breakout = true
-pullback_breakout_lookback = 3
-ema_stop_buffer_pct = 0.001
-take_profit_risk_multiple = 1.5
-max_stop_distance_frac_of_price = 0.04
-enable_time_stop = true
-max_bars_in_trade = 30
-enable_macd_failure_exit = true
-min_bars_before_macd_exit = 10
-macd_exit_slope_lookback = 2
-macd_exit_min_slope_frac_of_price = 0.0008
-macd_exit_requires_histogram_confirmation = true
-macd_exit_requires_ema12_confirmation = false
 
 [[symbols]]
 ticker = "NVDA"
 
 [symbols.strategy]
 name = "macd_pullback"
-version = "v2"
-interval = "5m"
-lookback_bars = 700
-ema_fast_window = 12
-ema_slow_window = 26
-macd_fast_window = 12
-macd_slow_window = 26
-macd_signal_window = 9
-ema_band_window = 72
-opening_no_trade_bars = 6
-trend_persistence_lookback = 12
-min_bars_above_band_for_long = 8
-min_bars_below_band_for_short = 8
-trend_slope_lookback = 12
-min_ema_band_slope_frac = 0.001
-sideways_lookback = 12
-max_inside_band_bars = 9
-require_prior_impulse = true
-prior_impulse_lookback = 20
-min_prior_impulse_frac_of_price = 0.01
-pullback_memory_bars = 20
-max_bars_since_pullback_touch = 8
-max_pullback_band_overshoot_frac = 0.002
-require_macd_above_zero_for_long = true
-require_macd_below_zero_for_short = true
-require_histogram_reexpansion = true
-require_ema12_reclaim = true
-require_ema26_reclaim = true
-require_pullback_breakout = true
-pullback_breakout_lookback = 3
-ema_stop_buffer_pct = 0.001
-take_profit_risk_multiple = 1.5
-max_stop_distance_frac_of_price = 0.04
-enable_time_stop = true
-max_bars_in_trade = 30
-enable_macd_failure_exit = true
-min_bars_before_macd_exit = 10
-macd_exit_slope_lookback = 2
-macd_exit_min_slope_frac_of_price = 0.0008
-macd_exit_requires_histogram_confirmation = true
-macd_exit_requires_ema12_confirmation = false

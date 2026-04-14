@@ -116,6 +116,24 @@ def get_position(trading_client: TradingClient, symbol: str):
         return None
 
 
+def get_all_positions(trading_client: TradingClient) -> list:
+    """Return all currently open Alpaca positions."""
+    try:
+        return list(trading_client.get_all_positions())
+    except Exception as exc:
+        print(f"Error getting all positions: {exc}")
+        return []
+
+
+def get_asset(trading_client: TradingClient, symbol: str):
+    """Return the Alpaca asset metadata for a symbol, if available."""
+    try:
+        return trading_client.get_asset(symbol)
+    except Exception as exc:
+        print(f"Error getting asset {symbol}: {exc}")
+        return None
+
+
 def get_orders(trading_client: TradingClient, status: QueryOrderStatus = QueryOrderStatus.OPEN):
     """Return Alpaca orders for the requested status.
 
@@ -255,6 +273,37 @@ def get_order_status(order) -> str:
     if hasattr(status, "value"):
         status = status.value
     return str(status).lower()
+
+
+def get_position_market_value(position) -> float:
+    """Return the absolute market value for an Alpaca position."""
+    market_value = getattr(position, "market_value", None)
+    if market_value not in {None, ""}:
+        return abs(_safe_float(market_value))
+
+    qty = abs(_safe_float(getattr(position, "qty", 0)))
+    entry_price = _safe_float(getattr(position, "avg_entry_price", 0))
+    return abs(qty * entry_price)
+
+
+def get_asset_flags(asset) -> dict:
+    """Extract common tradability and shortability flags from an Alpaca asset."""
+    if asset is None:
+        return {
+            "tradable": False,
+            "shortable": False,
+            "easy_to_borrow": False,
+            "marginable": False,
+            "fractionable": False,
+        }
+
+    return {
+        "tradable": bool(getattr(asset, "tradable", False)),
+        "shortable": bool(getattr(asset, "shortable", False)),
+        "easy_to_borrow": bool(getattr(asset, "easy_to_borrow", False)),
+        "marginable": bool(getattr(asset, "marginable", False)),
+        "fractionable": bool(getattr(asset, "fractionable", False)),
+    }
 
 
 def is_final_order_status(status: str) -> bool:

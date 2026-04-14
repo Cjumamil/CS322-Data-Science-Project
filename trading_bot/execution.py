@@ -98,6 +98,21 @@ def build_trade_payload(
     }
 
 
+def summarize_final_order(order, serialize_value) -> str:
+    """Return a one-line summary of the final broker order state."""
+    symbol = serialize_value(getattr(order, "symbol", ""))
+    side = serialize_value(getattr(order, "side", ""))
+    status = get_order_status(order)
+    filled_qty = serialize_value(getattr(order, "filled_qty", ""))
+    requested_qty = serialize_value(getattr(order, "qty", ""))
+    filled_avg_price = serialize_value(getattr(order, "filled_avg_price", ""))
+    return (
+        f"symbol={symbol} side={side} status={status} "
+        f"filled_qty={filled_qty or '?'} requested_qty={requested_qty or '?'} "
+        f"filled_avg_price={filled_avg_price or '?'}"
+    )
+
+
 def place_protective_stop_after_entry(
     *,
     trading_client,
@@ -157,6 +172,61 @@ def cancel_stop_orders_if_needed(trading_client, symbol: str) -> None:
         order_id = str(getattr(order, "id", ""))
         if order_id and cancel_order_by_id(trading_client, order_id):
             print(f"Canceled existing stop order {order_id} before manual exit.")
+
+
+def reconcile_missing_protective_stop(
+    *,
+    trading_client,
+    symbol: str,
+    live_state: dict,
+    active_exit_levels: dict | None,
+    enable_broker_side_stop_loss: bool,
+) -> str:
+    """Ensure an already-open position has a broker-side protective stop when possible."""
+    if not enable_broker_side_stop_loss:
+        return "broker_stop_disabled"
+
+    position_side = live_state["position_side"]
+    position_qty = live_state["position_qty"]
+    if position_side not in {"long", "short"} or position_qty <= 0:
+        return "not_in_position"
+
+    if live_state["protective_stop_order"] is not None:
+        return "protective_stop_present"
+
+    if live_state["stop_orders"]:
+        print("Open stop orders exist, but none matches the live position. Protective stop reconciliation skipped.")
+        return "unmatched_open_stop_orders"
+
+    if active_exit_levels is None:
+        print("Could not resolve exit levels for protective stop reconciliation.")
+        return "missing_exit_levels"
+
+    stop_price = active_exit_levels.get("stop_price")
+    if stop_price is None:
+        print("Protective stop reconciliation skipped because no stop price was available.")
+        return "missing_stop_price"
+
+    expected_stop_side = expected_protective_stop_side(position_side)
+    if expected_stop_side is None:
+        return "invalid_position_side"
+
+    try:
+        submit_stop_order(
+            trading_client,
+            symbol,
+            action_to_order_side("SELL" if expected_stop_side == "sell" else "BUY"),
+            position_qty,
+            float(stop_price),
+        )
+        print(
+            "Reconciled missing protective stop-loss order "
+            f"for {symbol}: side={expected_stop_side}, qty={position_qty}, stop={float(stop_price):.2f}."
+        )
+        return "protective_stop_reconciled"
+    except Exception as exc:
+        print(f"Could not reconcile protective stop-loss order: {exc}")
+        return "protective_stop_reconcile_failed"
 
 
 def finalize_order_logging(
@@ -253,8 +323,7 @@ def submit_and_track_order(
 ) -> None:
     """Submit an order, then poll briefly so trade logs reflect final fill data when possible."""
     order = submit_market_order(trading_client, symbol, action_to_order_side(action), qty)
-    print(f"{action} ORDER SUBMITTED:")
-    print(order)
+    print(f"Submitted {action} market order for {symbol}: qty={qty}")
 
     record_submitted_action(
         session_state,
@@ -280,6 +349,7 @@ def submit_and_track_order(
     )
 
     if final_order is not None and is_final_order_status(get_order_status(final_order)):
+        print(f"Order final state: {summarize_final_order(final_order, serialize_value)}")
         finalize_order_logging(
             trading_client=trading_client,
             session_state=session_state,
@@ -312,13 +382,13 @@ def handle_pending_order_state(
     take_profit_pct: float,
     enable_broker_side_stop_loss: bool,
     serialize_value,
-) -> bool:
+) -> tuple[str, str] | None:
     """Handle unresolved broker orders before looking at fresh signals."""
     pending_result, pending_order = refresh_pending_order(trading_client, session_state, symbol, live_state)
     if pending_result == "pending":
         print("Existing order is still pending. New trade decisions are paused.")
         log_decision_event("HOLD", "pending_order_not_final", market_open=current_market_open)
-        return True
+        return "HOLD", "pending_order_not_final"
     if pending_result == "finalized":
         finalize_order_logging(
             trading_client=trading_client,
@@ -334,18 +404,18 @@ def handle_pending_order_state(
             serialize_value=serialize_value,
         )
         print("Previous order finalized. Waiting for the next cycle before taking a new action.")
-        return True
+        return "HOLD", "previous_order_finalized_wait_next_cycle"
     if pending_result == "unknown":
         print("Could not refresh the existing order. New trade decisions are paused.")
         log_decision_event("HOLD", "pending_order_lookup_failed", market_open=current_market_open)
-        return True
+        return "HOLD", "pending_order_lookup_failed"
     if live_state["blocking_orders"]:
         print("Broker reports working non-protective order(s) for this symbol. New trade decisions are paused.")
         for order in live_state["blocking_orders"]:
             print(f"Working order: {describe_order(order, serialize_value)}")
         log_decision_event("HOLD", "broker_open_order_exists", market_open=current_market_open)
-        return True
-    return False
+        return "HOLD", "broker_open_order_exists"
+    return None
 
 
 def handle_flatten_before_close(
@@ -366,12 +436,12 @@ def handle_flatten_before_close(
     take_profit_pct: float,
     enable_broker_side_stop_loss: bool,
     serialize_value,
-) -> bool:
+) -> tuple[str, str] | None:
     """Flatten any live position before the configured market close cutoff."""
     position_side = live_state["position_side"]
     if position_side == "flat":
         log_decision_event("HOLD", "flatten_window_no_new_entries", market_open=True)
-        return True
+        return "HOLD", "flatten_window_no_new_entries"
 
     action = exit_action_for_position_side(position_side)
     qty = live_state["position_qty"]
@@ -381,7 +451,7 @@ def handle_flatten_before_close(
     if should_prevent_duplicate_trade(session_state, symbol, action, event_key):
         print(f"Duplicate {action} prevented for the current strategy event.")
         log_decision_event("HOLD", f"duplicate_{action.lower()}_prevented", qty=qty, market_open=True)
-        return True
+        return "HOLD", f"duplicate_{action.lower()}_prevented"
 
     cancel_stop_orders_if_needed(trading_client, symbol)
     decision_id = log_decision_event(action, "flatten_before_close", qty=qty, market_open=True)
@@ -407,7 +477,7 @@ def handle_flatten_before_close(
         enable_broker_side_stop_loss=enable_broker_side_stop_loss,
         serialize_value=serialize_value,
     )
-    return True
+    return action, "flatten_before_close"
 
 
 def handle_exit_triggers(
@@ -431,11 +501,11 @@ def handle_exit_triggers(
     order_status_timeout_seconds: int,
     enable_broker_side_stop_loss: bool,
     serialize_value,
-) -> bool:
+) -> tuple[str, str] | None:
     """Handle position exits using live broker state for size and basis."""
     position_side = live_state["position_side"]
     if position_side == "flat":
-        return False
+        return None
 
     qty = live_state["position_qty"]
     entry_price = live_state["entry_price"]
@@ -450,7 +520,7 @@ def handle_exit_triggers(
     )
     if exit_levels is None:
         print("Could not resolve stop-loss / take-profit levels for the live position.")
-        return False
+        return None
 
     exit_reason = should_exit_position(
         latest_close,
@@ -459,16 +529,16 @@ def handle_exit_triggers(
         exit_levels["take_profit_price"],
     )
     if exit_reason is None:
-        return False
+        return None
 
     action = exit_action_for_position_side(position_side)
     if action is None:
-        return False
+        return None
 
     if should_prevent_duplicate_trade(session_state, symbol, action, event_key):
         print(f"Duplicate {action} prevented for the current strategy event.")
         log_decision_event("HOLD", f"duplicate_{action.lower()}_prevented", qty=qty, market_open=True)
-        return True
+        return "HOLD", f"duplicate_{action.lower()}_prevented"
 
     cancel_stop_orders_if_needed(trading_client, symbol)
     decision_id = log_decision_event(action, exit_reason, qty=qty, market_open=True)
@@ -494,7 +564,7 @@ def handle_exit_triggers(
         enable_broker_side_stop_loss=enable_broker_side_stop_loss,
         serialize_value=serialize_value,
     )
-    return True
+    return action, exit_reason
 
 
 def handle_strategy_actions(
@@ -523,19 +593,19 @@ def handle_strategy_actions(
     enable_broker_side_stop_loss: bool,
     serialize_value,
     signal_time: str | None = None,
-) -> bool:
+) -> tuple[str, str] | None:
     """Handle direction-aware strategy entries and exits for the active strategy."""
     position_side = live_state["position_side"]
     qty = live_state["position_qty"]
 
     if position_side == "flat":
         if strategy_entry_action not in {"BUY", "SELL"}:
-            return False
+            return None
 
         if live_state["stop_orders"]:
             print("One or more stop orders still exist without a live position. New entry is paused.")
             log_decision_event("HOLD", "stale_protective_stop_exists", market_open=True)
-            return True
+            return "HOLD", "stale_protective_stop_exists"
 
         if should_prevent_duplicate_trade(session_state, symbol, strategy_entry_action, event_key):
             print(f"Duplicate {strategy_entry_action} prevented for the current strategy event.")
@@ -544,7 +614,7 @@ def handle_strategy_actions(
                 f"duplicate_{strategy_entry_action.lower()}_prevented",
                 market_open=True,
             )
-            return True
+            return "HOLD", f"duplicate_{strategy_entry_action.lower()}_prevented"
 
         entry_qty = calculate_order_qty(
             latest_close,
@@ -567,7 +637,7 @@ def handle_strategy_actions(
             if entry_risk_plan is not None and entry_risk_plan.get("rejection_reason"):
                 rejection_reason = str(entry_risk_plan["rejection_reason"])
             log_decision_event("HOLD", rejection_reason, market_open=True)
-            return True
+            return "HOLD", rejection_reason
 
         decision_id = log_decision_event(strategy_entry_action, strategy_entry_reason, qty=entry_qty, market_open=True)
         submit_and_track_order(
@@ -594,13 +664,13 @@ def handle_strategy_actions(
             entry_risk_plan=entry_risk_plan,
             signal_time=signal_time,
         )
-        return True
+        return strategy_entry_action, strategy_entry_reason
 
     if position_side == "long" and strategy_exit_action == "SELL":
         if should_prevent_duplicate_trade(session_state, symbol, "SELL", event_key):
             print("Duplicate SELL prevented for the current strategy event.")
             log_decision_event("HOLD", "duplicate_sell_prevented", market_open=True)
-            return True
+            return "HOLD", "duplicate_sell_prevented"
 
         cancel_stop_orders_if_needed(trading_client, symbol)
         decision_id = log_decision_event("SELL", strategy_exit_reason, qty=qty, market_open=True)
@@ -626,13 +696,13 @@ def handle_strategy_actions(
             enable_broker_side_stop_loss=enable_broker_side_stop_loss,
             serialize_value=serialize_value,
         )
-        return True
+        return "SELL", strategy_exit_reason
 
     if position_side == "short" and strategy_exit_action == "BUY":
         if should_prevent_duplicate_trade(session_state, symbol, "BUY", event_key):
             print("Duplicate BUY prevented for the current strategy event.")
             log_decision_event("HOLD", "duplicate_buy_prevented", market_open=True)
-            return True
+            return "HOLD", "duplicate_buy_prevented"
 
         cancel_stop_orders_if_needed(trading_client, symbol)
         decision_id = log_decision_event("BUY", strategy_exit_reason, qty=qty, market_open=True)
@@ -658,6 +728,6 @@ def handle_strategy_actions(
             enable_broker_side_stop_loss=enable_broker_side_stop_loss,
             serialize_value=serialize_value,
         )
-        return True
+        return "BUY", strategy_exit_reason
 
-    return False
+    return None

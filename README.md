@@ -23,11 +23,14 @@ The system is designed to simulate real-world trading behavior, including:
 * Pluggable strategy architecture
 * Current built-in strategies: SMA crossover and EMA-band MACD pullback
 * Paper trading mode (no real money used)
+* Startup preflight mode for account / symbol readiness checks
 * Trade logging with linked decision/trade IDs
 * Flexible strategy context logging in JSONL
 * Broker-state-aware order/position handling
 * Direction-aware paper trading for flat, long, and short positions
 * Basic risk management (broker-side stop-loss and loop-based take-profit)
+* Entry safeguards for shortability / easy-to-borrow checks and portfolio exposure caps
+* Lightweight persisted live session state for cleaner restarts
 * Offline backtests with per-run artifacts and per-trade zoom charts
 
 ---
@@ -82,11 +85,14 @@ This file controls:
 * which symbols to trade
 * which strategy each symbol uses
 
-The current sample config includes:
+Per-symbol strategy blocks inherit built-in defaults for the selected strategy, so you can keep most symbols minimal and only add overrides when needed.
 
-* `AAPL` with `sma_crossover`
-* `ALB` with `macd_pullback` and a wider stop-distance filter
-* `MSFT` with `macd_pullback` on `5m` bars
+The current active sample config includes:
+
+* `MSFT` with `macd_pullback`
+* `NVDA` with `macd_pullback`
+
+Additional symbols such as `AAPL`, `AMD`, `AMZN`, `META`, `SPY`, `QQQ`, and `IWM` can be staged in commented `[[symbols]]` blocks and re-enabled later by uncommenting them.
 
 The current `macd_pullback` implementation is built around:
 
@@ -97,7 +103,17 @@ The current `macd_pullback` implementation is built around:
 
 Recent NVDA backtest sweeps suggest a better exploratory baseline than the original `EMA200` setup: `ema_band_window=72`, `require_pullback_breakout=true`, and `pullback_breakout_lookback=3`. This is currently treated as a research baseline for further chart review and exit tuning rather than a finalized production setting.
 
-#### 4. Run the bot
+#### 4. Run a preflight check
+
+Before a live paper-trading session, you can set `preflight_only = true` in `bot_config.toml` and run:
+
+```bash
+python -m trading_bot.main
+```
+
+This prints account state, market clock, symbol tradability / shortability flags, open positions, protective-stop status, and working orders, then exits without trading.
+
+#### 5. Run the bot
 
 From the project root directory:
 
@@ -105,7 +121,7 @@ From the project root directory:
 python -m trading_bot.main
 ```
 
-#### 5. Run an offline backtest
+#### 6. Run an offline backtest
 
 Use the separate backtest entry point for historical analysis:
 
@@ -160,6 +176,7 @@ Example run folder name:
 * Market must be open for trades to occur
 * The bot evaluates configured symbols sequentially each polling cycle
 * Logs are observational only; Alpaca broker/account state is treated as the source of truth
+* A lightweight `live_session_state.json` file is used to persist active trade context across restarts
 
 ---
 
@@ -170,6 +187,7 @@ The bot writes three main logs in the project root:
 * `decision_log.csv` - stable, spreadsheet-friendly record of bot decisions
 * `trade_log.csv` - execution/fill log with order lifecycle details
 * `strategy_context_log.jsonl` - flexible strategy-specific context for each decision
+* `live_session_state.json` - persisted lightweight live trade context used to make restarts safer
 * `backtests/<timestamped-run-folder>/` - local offline backtest trade logs, summaries, and charts for one run
 * `shared_backtests/<timestamped-run-folder>/` - team-shared offline backtest runs intended for Git commits
 
@@ -189,7 +207,7 @@ Each run can also contain a `trade_charts/` folder with one zoomed candlestick c
 * Order tracking is polling-based (not real-time streaming)
 * Take-profit logic is loop-based, not broker-side
 * Symbols are processed sequentially, not concurrently
-* Broker-side stop placement for short positions depends on Alpaca accepting buy stop orders on the symbol in paper trading
+* Broker-side stop placement and short entries still depend on Alpaca accepting the order on the symbol in paper trading
 
 ---
 
