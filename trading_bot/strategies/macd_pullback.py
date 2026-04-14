@@ -65,6 +65,10 @@ class MacdPullbackStrategy(TradingStrategy):
     max_bars_in_trade: int
     enable_macd_failure_exit: bool
     min_bars_before_macd_exit: int
+    macd_exit_slope_lookback: int
+    macd_exit_min_slope_frac_of_price: float
+    macd_exit_requires_histogram_confirmation: bool
+    macd_exit_requires_ema12_confirmation: bool
     name: str = "macd_pullback"
     version: str = "v2"
 
@@ -78,6 +82,7 @@ class MacdPullbackStrategy(TradingStrategy):
             self.max_bars_since_pullback_touch,
             self.pullback_breakout_lookback,
             self.opening_no_trade_bars,
+            self.macd_exit_slope_lookback,
         ) + 5
 
     def _interval_minutes(self) -> int:
@@ -93,7 +98,7 @@ class MacdPullbackStrategy(TradingStrategy):
         return position_context.bars_in_trade >= self.max_bars_in_trade
 
     def _macd_failure_triggered(self, latest_row: pd.Series, position_context: PositionContext | None) -> bool:
-        """Optional early exit when MACD momentum flips back against the trade."""
+        """Optional early exit when MACD momentum clearly deteriorates against the trade."""
         if not self.enable_macd_failure_exit or position_context is None:
             return False
         if position_context.bars_in_trade is None or position_context.bars_in_trade < self.min_bars_before_macd_exit:
@@ -272,11 +277,11 @@ class MacdPullbackStrategy(TradingStrategy):
         work["macd_cross_below_signal"] = (
             (work["MACD"] < work["signal_line"]) & (previous_macd >= previous_signal)
         ).fillna(False)
-        work["macd_failure_long_signal"] = work["macd_cross_below_signal"]
-        work["macd_failure_short_signal"] = work["macd_cross_above_signal"]
 
         work["histogram_rising"] = (work["histogram"] > work["histogram_previous"]).fillna(False)
         work["histogram_falling"] = (work["histogram"] < work["histogram_previous"]).fillna(False)
+        work["macd_slope"] = work["MACD"] - work["MACD"].shift(self.macd_exit_slope_lookback)
+        work["macd_slope_frac"] = work["macd_slope"] / work["Close"].where(work["Close"] > 0)
 
         recent_pullback_high = work["High"].shift(1).rolling(self.pullback_breakout_lookback, min_periods=1).max()
         recent_pullback_low = work["Low"].shift(1).rolling(self.pullback_breakout_lookback, min_periods=1).min()
@@ -301,6 +306,17 @@ class MacdPullbackStrategy(TradingStrategy):
 
         work["bullish_reentry_trigger"] = bullish_reentry.fillna(False)
         work["bearish_reentry_trigger"] = bearish_reentry.fillna(False)
+
+        macd_failure_long = work["macd_slope_frac"] <= (-self.macd_exit_min_slope_frac_of_price)
+        macd_failure_short = work["macd_slope_frac"] >= self.macd_exit_min_slope_frac_of_price
+        if self.macd_exit_requires_histogram_confirmation:
+            macd_failure_long &= work["histogram_falling"]
+            macd_failure_short &= work["histogram_rising"]
+        if self.macd_exit_requires_ema12_confirmation:
+            macd_failure_long &= work["Close"] < work["EMA12"]
+            macd_failure_short &= work["Close"] > work["EMA12"]
+        work["macd_failure_long_signal"] = macd_failure_long.fillna(False)
+        work["macd_failure_short_signal"] = macd_failure_short.fillna(False)
 
         risk_snapshots = []
         for _, row in work.iterrows():
@@ -519,6 +535,10 @@ class MacdPullbackStrategy(TradingStrategy):
             "max_bars_in_trade": self.max_bars_in_trade,
             "enable_macd_failure_exit": self.enable_macd_failure_exit,
             "min_bars_before_macd_exit": self.min_bars_before_macd_exit,
+            "macd_exit_slope_lookback": self.macd_exit_slope_lookback,
+            "macd_exit_min_slope_frac_of_price": self.macd_exit_min_slope_frac_of_price,
+            "macd_exit_requires_histogram_confirmation": self.macd_exit_requires_histogram_confirmation,
+            "macd_exit_requires_ema12_confirmation": self.macd_exit_requires_ema12_confirmation,
         }
 
     def build_strategy_signals(self, latest_row: pd.Series, position_context: PositionContext | None = None) -> dict:
@@ -562,6 +582,8 @@ class MacdPullbackStrategy(TradingStrategy):
             "histogram_previous": _safe_float(latest_row["histogram_previous"]),
             "histogram_rising": _safe_bool(latest_row["histogram_rising"]),
             "histogram_falling": _safe_bool(latest_row["histogram_falling"]),
+            "macd_slope": _safe_float(latest_row.get("macd_slope")),
+            "macd_slope_frac": _safe_float(latest_row.get("macd_slope_frac")),
             "macd_pullback_context_long": _safe_bool(latest_row["macd_pullback_context_long"]),
             "macd_pullback_context_short": _safe_bool(latest_row["macd_pullback_context_short"]),
             "pullback_breakout_long": _safe_bool(latest_row["pullback_breakout_long"]),
@@ -586,6 +608,10 @@ class MacdPullbackStrategy(TradingStrategy):
             "macd_failure_long_signal": _safe_bool(latest_row["macd_failure_long_signal"]),
             "macd_failure_short_signal": _safe_bool(latest_row["macd_failure_short_signal"]),
             "min_bars_before_macd_exit": self.min_bars_before_macd_exit,
+            "macd_exit_slope_lookback": self.macd_exit_slope_lookback,
+            "macd_exit_min_slope_frac_of_price": self.macd_exit_min_slope_frac_of_price,
+            "macd_exit_requires_histogram_confirmation": self.macd_exit_requires_histogram_confirmation,
+            "macd_exit_requires_ema12_confirmation": self.macd_exit_requires_ema12_confirmation,
             "macd_failure_exit_armed": macd_failure_exit_armed,
             "long_entry_signal": _safe_bool(latest_row["long_entry_signal"]),
             "short_entry_signal": _safe_bool(latest_row["short_entry_signal"]),

@@ -25,7 +25,7 @@ DEFAULT_STRATEGY_CONFIGS = {
         "macd_fast_window": 12,
         "macd_slow_window": 26,
         "macd_signal_window": 9,
-        "ema_band_window": 200,
+        "ema_band_window": 72,
         "opening_no_trade_bars": 6,
         "trend_persistence_lookback": 12,
         "min_bars_above_band_for_long": 8,
@@ -45,15 +45,19 @@ DEFAULT_STRATEGY_CONFIGS = {
         "require_histogram_reexpansion": True,
         "require_ema12_reclaim": True,
         "require_ema26_reclaim": True,
-        "require_pullback_breakout": False,
-        "pullback_breakout_lookback": 5,
+        "require_pullback_breakout": True,
+        "pullback_breakout_lookback": 3,
         "ema_stop_buffer_pct": 0.001,
         "take_profit_risk_multiple": 1.5,
         "max_stop_distance_frac_of_price": 0.04,
-        "enable_time_stop": False,
-        "max_bars_in_trade": 18,
-        "enable_macd_failure_exit": False,
-        "min_bars_before_macd_exit": 4,
+        "enable_time_stop": True,
+        "max_bars_in_trade": 30,
+        "enable_macd_failure_exit": True,
+        "min_bars_before_macd_exit": 10,
+        "macd_exit_slope_lookback": 2,
+        "macd_exit_min_slope_frac_of_price": 0.0008,
+        "macd_exit_requires_histogram_confirmation": True,
+        "macd_exit_requires_ema12_confirmation": False,
     },
 }
 
@@ -125,6 +129,16 @@ def create_strategy(strategy_config: dict):
             max_bars_in_trade=int(strategy_config.get("max_bars_in_trade", 18)),
             enable_macd_failure_exit=bool(strategy_config.get("enable_macd_failure_exit", False)),
             min_bars_before_macd_exit=int(strategy_config.get("min_bars_before_macd_exit", 4)),
+            macd_exit_slope_lookback=int(strategy_config.get("macd_exit_slope_lookback", 1)),
+            macd_exit_min_slope_frac_of_price=float(
+                strategy_config.get("macd_exit_min_slope_frac_of_price", 0.0005)
+            ),
+            macd_exit_requires_histogram_confirmation=bool(
+                strategy_config.get("macd_exit_requires_histogram_confirmation", True)
+            ),
+            macd_exit_requires_ema12_confirmation=bool(
+                strategy_config.get("macd_exit_requires_ema12_confirmation", True)
+            ),
             version=str(strategy_config.get("version", "v2")),
         )
 

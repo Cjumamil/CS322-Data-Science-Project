@@ -245,3 +245,17 @@ Focus on capturing decision and intent.
 **Decision:** Splitting tasks between team members, where Havanna works on Info Dashboard, whilst Cooper and Ulysses work on XGBoost and the Report Writeup.  
 **Reasoning:** An Info Dashboard is useful for observing data collected from our backtest runs and paper trading. XGBoost is a useful next step, allowing us to optimize our strategies. And we're nearing the time to write the reports. Splitting these tasks between our group members allows me(Joshua) to focus on designing the core functions of the bot.  
 **Approved by:** Joshua, Ulysses, Havanna, Cooper  
+
+## D-032
+**Date:** 2026-04-14  
+**Topic:** MACD Failure Exit Redesign for `macd_pullback`  
+**Decision:** Replace the prior MACD-failure exit logic (simple MACD/signal crossover) with a configurable momentum-deterioration model based on MACD slope strength plus optional confirmation filters. Add strategy parameters for `macd_exit_slope_lookback`, `macd_exit_min_slope_frac_of_price`, `macd_exit_requires_histogram_confirmation`, and `macd_exit_requires_ema12_confirmation`, while retaining `min_bars_before_macd_exit` as an arming delay.  
+**Reasoning:** Trade-chart review showed many cases where waiting for a full MACD/signal crossover was too late, while overly sensitive momentum checks were too noisy. The slope-based model allows earlier reaction to clear momentum failure without forcing a one-size-fits-all crossover exit. Keeping the new behavior strategy-local (instead of moving it into shared risk utilities) preserves architecture clarity because MACD-specific logic should remain in MACD-based strategies.  
+**Approved by:** Joshua  
+
+## D-033
+**Date:** 2026-04-14  
+**Topic:** NVDA Baseline Finalization and Strategy Default Promotion  
+**Decision:** Promote the tuned NVDA `macd_pullback` settings to the working baseline and align `macd_pullback` defaults to match, so new symbols start from the same improved configuration. The active baseline includes: `ema_band_window=72`, `require_pullback_breakout=true`, `pullback_breakout_lookback=3`, `max_stop_distance_frac_of_price=0.04`, `enable_time_stop=true`, `max_bars_in_trade=30`, `enable_macd_failure_exit=true`, `min_bars_before_macd_exit=10`, `macd_exit_slope_lookback=2`, `macd_exit_min_slope_frac_of_price=0.0008`, `macd_exit_requires_histogram_confirmation=true`, and `macd_exit_requires_ema12_confirmation=false`.  
+**Reasoning:** Multi-year sweeps showed this setup balanced return, profit factor, and practical exit activity better than stricter or looser alternatives. In particular, very high MACD slope thresholds produced strong headline stats but almost no `macd_failure` exits, while this baseline kept exits meaningfully active without becoming trigger-happy. A cross-check on MSFT with matched settings also preferred `macd_exit_slope_lookback=2`, supporting generalization beyond NVDA. Additional sweeps confirmed that raising `max_stop_distance_frac_of_price` above `0.04` did not improve results.  
+**Approved by:** Joshua  
