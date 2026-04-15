@@ -5,7 +5,7 @@ version = "0.3.0"
 run_continuously = true
 poll_interval_seconds = 60 # Seconds to wait between full multi-symbol polling cycles.
 paper_trading = true
-preflight_only = true # When true, print the startup readiness report and exit without trading.
+preflight_only = false # When true, print the startup readiness report and exit without trading.
 
 # Execution/mechanical behavior rather than signal logic.
 [execution]
@@ -34,30 +34,30 @@ max_total_position_fraction_of_buying_power = 0.08 # Block new entries when tota
 # 2. Keep only `name = "macd_pullback"` unless you intentionally want overrides.
 #
 # Expansion watchlist using the shared default `macd_pullback` settings:
-#
-# [[symbols]]
-# ticker = "AAPL"
-#
-# [symbols.strategy]
-# name = "macd_pullback"
-#
-# [[symbols]]
-# ticker = "AMD"
-#
-# [symbols.strategy]
-# name = "macd_pullback"
-#
-# [[symbols]]
-# ticker = "AMZN"
-#
-# [symbols.strategy]
-# name = "macd_pullback"
-#
-# [[symbols]]
-# ticker = "META"
-#
-# [symbols.strategy]
-# name = "macd_pullback"
+
+[[symbols]]
+ticker = "AAPL"
+
+[symbols.strategy]
+name = "macd_pullback"
+
+[[symbols]]
+ticker = "AMD"
+
+[symbols.strategy]
+name = "macd_pullback"
+
+[[symbols]]
+ticker = "AMZN"
+
+[symbols.strategy]
+name = "macd_pullback"
+
+[[symbols]]
+ticker = "META"
+
+[symbols.strategy]
+name = "macd_pullback"
 #
 # [[symbols]]
 # ticker = "SPY"

@@ -12,6 +12,7 @@ load_dotenv()
 
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+DEFAULT_API_REQUEST_TIMEOUT_SECONDS = 20
 
 FINAL_ORDER_STATUSES = {
     "filled",
@@ -79,7 +80,25 @@ def connect_alpaca(*, paper: bool = True) -> TradingClient:
             "Missing Alpaca credentials. Make sure your .env file contains ALPACA_API_KEY and ALPACA_SECRET_KEY."
         )
 
-    return TradingClient(API_KEY, SECRET_KEY, paper=paper)
+    trading_client = TradingClient(API_KEY, SECRET_KEY, paper=paper)
+    _inject_default_request_timeout(trading_client, DEFAULT_API_REQUEST_TIMEOUT_SECONDS)
+    return trading_client
+
+
+def _inject_default_request_timeout(trading_client: TradingClient, timeout_seconds: int) -> None:
+    """Inject a default timeout into the Alpaca client's shared requests session."""
+    session = getattr(trading_client, "_session", None)
+    if session is None or getattr(session, "_trading_bot_timeout_injected", False):
+        return
+
+    original_request = session.request
+
+    def request_with_timeout(method, url, **kwargs):
+        kwargs.setdefault("timeout", timeout_seconds)
+        return original_request(method, url, **kwargs)
+
+    session.request = request_with_timeout
+    session._trading_bot_timeout_injected = True
 
 
 def get_account(trading_client: TradingClient):
