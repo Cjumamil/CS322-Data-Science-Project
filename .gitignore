@@ -6,3 +6,6 @@ backtests/
 .vendor_manual/
 .vendor_bundle/
 .wheelhouse/
+workspace_pkgs/
+__pycache__/
+*.pyc

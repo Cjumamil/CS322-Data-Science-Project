@@ -174,9 +174,10 @@ def get_orders(trading_client: TradingClient, status: QueryOrderStatus = QueryOr
         return []
 
 
-def get_working_orders(trading_client: TradingClient, symbol: str | None = None) -> list:
+def get_working_orders(trading_client: TradingClient, symbol: str | None = None, orders: list | None = None) -> list:
     """Return non-final Alpaca orders, optionally filtered to one symbol."""
-    orders = get_orders(trading_client, status=QueryOrderStatus.OPEN)
+    if orders is None:
+        orders = get_orders(trading_client, status=QueryOrderStatus.OPEN)
     if symbol is None:
         return [order for order in orders if not is_final_order_status(get_order_status(order))]
     return [
@@ -186,18 +187,24 @@ def get_working_orders(trading_client: TradingClient, symbol: str | None = None)
     ]
 
 
-def get_stop_orders(trading_client: TradingClient, symbol: str) -> list:
+def get_stop_orders(trading_client: TradingClient, symbol: str, working_orders: list | None = None) -> list:
     """Return all open stop orders for the symbol."""
     return [
         order
-        for order in get_working_orders(trading_client, symbol)
+        for order in get_working_orders(trading_client, symbol, orders=working_orders)
         if _serialize_enum(getattr(order, "order_type", getattr(order, "type", ""))) == "stop"
     ]
 
 
-def get_protective_stop_order(trading_client: TradingClient, symbol: str, expected_side: str | None = None):
+def get_protective_stop_order(
+    trading_client: TradingClient,
+    symbol: str,
+    expected_side: str | None = None,
+    stop_orders: list | None = None,
+    working_orders: list | None = None,
+):
     """Return the first matching open stop order for the symbol, if one exists."""
-    for order in get_stop_orders(trading_client, symbol):
+    for order in get_stop_orders(trading_client, symbol, working_orders=working_orders) if stop_orders is None else stop_orders:
         if expected_side is not None and get_order_side(order) != expected_side:
             continue
         return order

@@ -58,24 +58,31 @@ ticker = "META"
 
 [symbols.strategy]
 name = "macd_pullback"
-#
-# [[symbols]]
-# ticker = "SPY"
-#
-# [symbols.strategy]
-# name = "macd_pullback"
-#
-# [[symbols]]
-# ticker = "QQQ"
-#
-# [symbols.strategy]
-# name = "macd_pullback"
-#
-# [[symbols]]
-# ticker = "IWM"
-#
-# [symbols.strategy]
-# name = "macd_pullback"
+
+[[symbols]]
+ticker = "SPY"
+
+[symbols.strategy]
+name = "macd_pullback"
+
+[[symbols]]
+ticker = "QQQ"
+
+[symbols.strategy]
+name = "macd_pullback"
+
+[[symbols]]
+ticker = "IWM"
+
+[symbols.strategy]
+name = "macd_pullback"
+
+[[symbols]]
+ticker = "ARKK"
+
+[symbols.strategy]
+name = "macd_pullback"
+
 #
 # Legacy ALB experiment kept for reference:
 # [[symbols]]

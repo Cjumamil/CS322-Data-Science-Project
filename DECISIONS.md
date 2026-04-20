@@ -273,3 +273,10 @@ Focus on capturing decision and intent.
 **Decision:** Make per-symbol strategy configs inherit built-in strategy defaults, and keep inactive expansion symbols commented in `bot_config.toml` so they can be re-enabled quickly without rewriting full parameter blocks.  
 **Reasoning:** The project is expected to scale to a larger symbol universe, and hand-defining every strategy parameter for each symbol would make the config hard to maintain. Default inheritance keeps the active config lightweight while still allowing symbol-specific overrides when needed.  
 **Approved by:** Joshua  
+
+## D-036
+**Date:** 2026-04-20  
+**Topic:** Pullback Trend-Alignment Relaxation for `macd_pullback`  
+**Decision:** Promote `require_recent_trend_alignment = false` to the working default for `macd_pullback` and validate the change in live paper trading.  
+**Reasoning:** Recent paper-trading behavior showed the strategy was producing very few trades across a growing symbol set, which made it difficult to gather enough live evidence and suggested the current entry logic was too restrictive. Chart review, especially on NVDA and AMD, showed repeated cases where a move still looked like a valid pullback continuation to a human, but the bot stayed flat because the pullback temporarily damaged the same-direction trend state before the recovery bar. This led to the realization that a pullback setup may still be valid as long as the day is not behaving sideways and there was meaningful recent trend context, even if the trend does not remain perfectly aligned through the pullback itself. Backtest sweeps on NVDA, MSFT, and AMD supported this interpretation: turning off the recent trend-alignment requirement increased trade count materially and improved results across all three tested symbols, with the strongest benefit being that the strategy stopped filtering out as many potential winners during pullback-and-reclaim behavior. The next step is to observe whether this more natural pullback interpretation also improves paper-trading activity and practical live behavior.  
+**Approved by:** Joshua  

@@ -198,18 +198,20 @@ def expected_protective_stop_side(position_side: str) -> str | None:
     return None
 
 
-def get_live_broker_state(trading_client, symbol: str) -> dict[str, Any]:
+def get_live_broker_state(trading_client, symbol: str, all_working_orders: list | None = None) -> dict[str, Any]:
     """Collect the live Alpaca state used for operational decisions."""
     position = get_position(trading_client, symbol)
-    working_orders = get_working_orders(trading_client, symbol)
+    working_orders = get_working_orders(trading_client, symbol, orders=all_working_orders)
     position_side = get_position_side(position)
     position_qty = get_position_qty(position)
-    stop_orders = get_stop_orders(trading_client, symbol)
+    stop_orders = get_stop_orders(trading_client, symbol, working_orders=working_orders)
     stop_order_ids = {str(getattr(stop_order, "id", "")) for stop_order in stop_orders}
     protective_stop_order = get_protective_stop_order(
         trading_client,
         symbol,
         expected_side=expected_protective_stop_side(position_side),
+        stop_orders=stop_orders,
+        working_orders=working_orders,
     )
     blocking_orders = [
         order

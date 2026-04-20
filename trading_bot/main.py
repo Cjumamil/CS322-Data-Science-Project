@@ -11,6 +11,7 @@ from trading_bot.broker import (
     get_asset_flags,
     get_market_clock,
     get_position_market_value,
+    get_working_orders,
     market_is_open,
 )
 from trading_bot.config import BotConfig, SymbolAssignment, load_config
@@ -189,6 +190,7 @@ def print_preflight_report(trading_client, config: BotConfig, session_state: dic
     """Print a startup preflight summary before the live trading loop begins."""
     print("\nPreflight:")
     symbol_width = max(len(symbol_config.ticker) for symbol_config in config.symbols) if config.symbols else 1
+    all_working_orders = get_working_orders(trading_client)
 
     account = get_account(trading_client)
     if account is None:
@@ -214,7 +216,7 @@ def print_preflight_report(trading_client, config: BotConfig, session_state: dic
     for symbol_config in config.symbols:
         symbol = symbol_config.ticker
         strategy = symbol_config.strategy
-        live_state = get_live_broker_state(trading_client, symbol)
+        live_state = get_live_broker_state(trading_client, symbol, all_working_orders=all_working_orders)
         if live_state["is_flat"]:
             clear_active_exit_levels(session_state, symbol)
         asset_flags = get_asset_flags(get_asset(trading_client, symbol))

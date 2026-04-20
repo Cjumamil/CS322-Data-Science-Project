@@ -45,6 +45,7 @@ class MacdPullbackStrategy(TradingStrategy):
     min_ema_band_slope_frac: float
     sideways_lookback: int
     max_inside_band_bars: int
+    require_recent_trend_alignment: bool
     require_prior_impulse: bool
     prior_impulse_lookback: int
     min_prior_impulse_frac_of_price: float
@@ -253,12 +254,14 @@ class MacdPullbackStrategy(TradingStrategy):
         work["pullback_depth_ok_short"] = (
             work["High"] <= (work["EMA200_high"] * (1 + self.max_pullback_band_overshoot_frac))
         ).fillna(False)
-        work["pullback_active_long"] = (
-            work["recent_long_trend"] & work["had_recent_pullback_long"] & work["pullback_depth_ok_long"]
-        ).fillna(False)
-        work["pullback_active_short"] = (
-            work["recent_short_trend"] & work["had_recent_pullback_short"] & work["pullback_depth_ok_short"]
-        ).fillna(False)
+        long_pullback_requirements = work["had_recent_pullback_long"] & work["pullback_depth_ok_long"]
+        short_pullback_requirements = work["had_recent_pullback_short"] & work["pullback_depth_ok_short"]
+        if self.require_recent_trend_alignment:
+            long_pullback_requirements &= work["recent_long_trend"]
+            short_pullback_requirements &= work["recent_short_trend"]
+
+        work["pullback_active_long"] = long_pullback_requirements.fillna(False)
+        work["pullback_active_short"] = short_pullback_requirements.fillna(False)
 
         if self.require_macd_above_zero_for_long:
             work["macd_pullback_context_long"] = (work["MACD"] > 0).fillna(False)
@@ -515,6 +518,7 @@ class MacdPullbackStrategy(TradingStrategy):
             "min_ema_band_slope_frac": self.min_ema_band_slope_frac,
             "sideways_lookback": self.sideways_lookback,
             "max_inside_band_bars": self.max_inside_band_bars,
+            "require_recent_trend_alignment": self.require_recent_trend_alignment,
             "require_prior_impulse": self.require_prior_impulse,
             "prior_impulse_lookback": self.prior_impulse_lookback,
             "min_prior_impulse_frac_of_price": self.min_prior_impulse_frac_of_price,
@@ -566,6 +570,7 @@ class MacdPullbackStrategy(TradingStrategy):
             "short_trend": _safe_bool(latest_row["short_trend"]),
             "trend_bias": str(latest_row["trend_bias"]),
             "sideways_market": _safe_bool(latest_row["sideways_market"]),
+            "require_recent_trend_alignment": self.require_recent_trend_alignment,
             "prior_impulse_long": _safe_bool(latest_row["prior_impulse_long"]),
             "prior_impulse_short": _safe_bool(latest_row["prior_impulse_short"]),
             "recent_long_extension_frac": _safe_float(latest_row["recent_long_extension_frac"]),

@@ -779,6 +779,12 @@ def build_backtest_summary(
             "setup_blocked_by_max_stop_distance_count": int(
                 analysis_df.get("entry_blocked_by_max_stop_distance", pd.Series(dtype=bool)).sum()
             ),
+            "setup_blocked_by_xgb_filter_count": int(
+                analysis_df.get("entry_blocked_by_xgb_filter", pd.Series(dtype=bool)).sum()
+            ),
+            "xgb_filter_pass_count": int(
+                analysis_df.get("xgb_filter_pass", pd.Series(dtype=bool)).sum()
+            ),
             "preview_entry_invalid_stop_count": int(
                 (
                     analysis_df.get("entry_blocked_by_stop_filter", pd.Series(dtype=bool)).fillna(False)
@@ -805,6 +811,29 @@ def build_backtest_summary(
             "short_entry_signal_count": int(
                 analysis_df.get("short_entry_signal", pd.Series(dtype=bool)).sum()
             ),
+            "xgb_filter_pass_bar_count": int(
+                analysis_df.get("xgb_filter_pass", pd.Series(dtype=bool)).sum()
+            ),
+        },
+        "xgb_filter_metrics": {
+            "average_trade_quality_prob": round(
+                float(
+                    analysis_df.get("xgb_trade_quality_prob", pd.Series(dtype=float)).dropna().mean()
+                ),
+                4,
+            )
+            if "xgb_trade_quality_prob" in analysis_df
+            and not analysis_df.get("xgb_trade_quality_prob", pd.Series(dtype=float)).dropna().empty
+            else None,
+            "max_trade_quality_prob": round(
+                float(
+                    analysis_df.get("xgb_trade_quality_prob", pd.Series(dtype=float)).dropna().max()
+                ),
+                4,
+            )
+            if "xgb_trade_quality_prob" in analysis_df
+            and not analysis_df.get("xgb_trade_quality_prob", pd.Series(dtype=float)).dropna().empty
+            else None,
         },
         "strategy_parameters": strategy_parameters,
         "risk_settings": {
@@ -841,6 +870,9 @@ def print_summary(
     print(f"Short trades: {summary['short_trade_count']}")
     if summary["profit_factor"] is not None:
         print(f"Profit factor: {summary['profit_factor']:.2f}")
+    xgb_blocked = summary.get("entry_filter_stats", {}).get("setup_blocked_by_xgb_filter_count", 0)
+    if xgb_blocked:
+        print(f"XGBoost-blocked setups: {xgb_blocked}")
     print()
     print(f"Trades CSV: {trades_csv_path}")
     print(f"Summary JSON: {summary_json_path}")
