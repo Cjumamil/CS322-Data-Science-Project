@@ -5,6 +5,7 @@ from copy import deepcopy
 from trading_bot.strategies.macd_pullback import MacdPullbackStrategy
 from trading_bot.strategies.macd_pullback_xgboost import MacdPullbackXgboostFilterStrategy
 from trading_bot.strategies.sma_crossover import SmaCrossoverStrategy
+from trading_bot.strategies.vwap_rsi_mean_reversion import VwapRsiMeanReversionStrategy
 
 
 DEFAULT_STRATEGY_CONFIGS = {
@@ -107,6 +108,31 @@ DEFAULT_STRATEGY_CONFIGS = {
         "macd_exit_requires_ema12_confirmation": False,
         "xgb_model_path": "",
         "xgb_probability_threshold": 0.55,
+    },
+    "vwap_rsi_mean_reversion": {
+        "name": "vwap_rsi_mean_reversion",
+        "version": "v1",
+        "interval": "5m",
+        "lookback_bars": 500,
+        "rsi_window": 14,
+        "rsi_oversold_threshold": 30.0,
+        "rsi_overbought_threshold": 70.0,
+        "min_distance_from_vwap_frac": 0.003,
+        "confirmation_lookback_bars": 3,
+        "min_reversal_move_frac_of_price": 0.0015,
+        "require_reversal_bar": True,
+        "require_candle_color_confirmation": False,
+        "stop_reference_lookback_bars": 4,
+        "stop_buffer_pct": 0.001,
+        "take_profit_vwap_fraction": 1.0,
+        "max_stop_distance_frac_of_price": 0.02,
+        "entry_start_minutes_after_open": 30,
+        "entry_end_minutes_before_close": 30,
+        "enable_time_stop": True,
+        "max_bars_in_trade": 12,
+        "enable_extreme_trend_filter": True,
+        "trend_lookback_bars": 6,
+        "max_trend_move_frac_of_price": 0.02,
     },
 }
 
@@ -251,6 +277,41 @@ def create_strategy(strategy_config: dict):
             base_strategy=base_strategy,
             xgb_model_path=str(strategy_config.get("xgb_model_path", "")),
             xgb_probability_threshold=float(strategy_config.get("xgb_probability_threshold", 0.55)),
+            symbol=None if strategy_config.get("symbol") in {None, ""} else str(strategy_config.get("symbol")).upper(),
+            version=str(strategy_config.get("version", "v1")),
+        )
+
+    if name == "vwap_rsi_mean_reversion":
+        return VwapRsiMeanReversionStrategy(
+            interval=str(strategy_config["interval"]),
+            lookback_bars=int(strategy_config["lookback_bars"]),
+            rsi_window=int(strategy_config.get("rsi_window", 14)),
+            rsi_oversold_threshold=float(strategy_config.get("rsi_oversold_threshold", 30.0)),
+            rsi_overbought_threshold=float(strategy_config.get("rsi_overbought_threshold", 70.0)),
+            min_distance_from_vwap_frac=float(strategy_config.get("min_distance_from_vwap_frac", 0.003)),
+            confirmation_lookback_bars=int(strategy_config.get("confirmation_lookback_bars", 3)),
+            min_reversal_move_frac_of_price=float(
+                strategy_config.get("min_reversal_move_frac_of_price", 0.0015)
+            ),
+            require_reversal_bar=bool(strategy_config.get("require_reversal_bar", True)),
+            require_candle_color_confirmation=bool(
+                strategy_config.get("require_candle_color_confirmation", False)
+            ),
+            stop_reference_lookback_bars=int(strategy_config.get("stop_reference_lookback_bars", 4)),
+            stop_buffer_pct=float(strategy_config.get("stop_buffer_pct", 0.001)),
+            take_profit_vwap_fraction=float(strategy_config.get("take_profit_vwap_fraction", 1.0)),
+            max_stop_distance_frac_of_price=(
+                None
+                if strategy_config.get("max_stop_distance_frac_of_price") in {None, ""}
+                else float(strategy_config["max_stop_distance_frac_of_price"])
+            ),
+            entry_start_minutes_after_open=int(strategy_config.get("entry_start_minutes_after_open", 30)),
+            entry_end_minutes_before_close=int(strategy_config.get("entry_end_minutes_before_close", 30)),
+            enable_time_stop=bool(strategy_config.get("enable_time_stop", True)),
+            max_bars_in_trade=int(strategy_config.get("max_bars_in_trade", 12)),
+            enable_extreme_trend_filter=bool(strategy_config.get("enable_extreme_trend_filter", True)),
+            trend_lookback_bars=int(strategy_config.get("trend_lookback_bars", 6)),
+            max_trend_move_frac_of_price=float(strategy_config.get("max_trend_move_frac_of_price", 0.02)),
             version=str(strategy_config.get("version", "v1")),
         )
 
@@ -261,6 +322,7 @@ __all__ = [
     "MacdPullbackStrategy",
     "MacdPullbackXgboostFilterStrategy",
     "SmaCrossoverStrategy",
+    "VwapRsiMeanReversionStrategy",
     "create_strategy",
     "default_strategy_config",
     "list_supported_strategies",

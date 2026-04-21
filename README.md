@@ -21,7 +21,7 @@ The system is designed to simulate real-world trading behavior, including:
 * Config-driven setup via `bot_config.toml`
 * Multi-symbol sequential evaluation in one run
 * Pluggable strategy architecture
-* Current built-in strategies: SMA crossover and EMA-band MACD pullback
+* Current built-in strategies: SMA crossover, EMA-band MACD pullback, VWAP + RSI mean reversion, and an experimental XGBoost-filtered MACD pullback variant
 * Paper trading mode (no real money used)
 * Startup preflight mode for account / symbol readiness checks
 * Trade logging with linked decision/trade IDs
@@ -29,7 +29,7 @@ The system is designed to simulate real-world trading behavior, including:
 * Broker-state-aware order/position handling
 * Direction-aware paper trading for flat, long, and short positions
 * Basic risk management (broker-side stop-loss and loop-based take-profit)
-* Entry safeguards for shortability / easy-to-borrow checks and portfolio exposure caps
+* Entry safeguards for shortability, optional easy-to-borrow enforcement, and portfolio exposure caps
 * Lightweight persisted live session state for cleaner restarts
 * Offline backtests with per-run artifacts and per-trade zoom charts
 
@@ -52,7 +52,11 @@ trading_bot/
 `-- strategies/
     |-- base.py           # Shared strategy interface/helpers
     |-- sma_crossover.py  # SMA crossover strategy
-    `-- macd_pullback.py  # EMA-band + MACD pullback continuation strategy
+    |-- macd_pullback.py  # EMA-band + MACD pullback continuation strategy
+    |-- vwap_rsi_mean_reversion.py  # VWAP + RSI intraday mean-reversion strategy
+    `-- macd_pullback_xgboost.py  # Experimental XGBoost-gated MACD pullback variant
+|-- train_xgboost_filter.py  # Pooled XGBoost training / evaluation workflow
+`-- xgboost_filter.py    # Shared XGBoost feature engineering and inference helpers
 
 bot_config.toml           # Bot/runtime/risk settings + per-symbol strategy assignments
 shared_backtests/         # Team-shared backtest runs intended for Git commits
@@ -87,12 +91,20 @@ This file controls:
 
 Per-symbol strategy blocks inherit built-in defaults for the selected strategy, so you can keep most symbols minimal and only add overrides when needed.
 
-The current active sample config includes:
+The current active config includes:
 
-* `MSFT` with `macd_pullback`
-* `NVDA` with `macd_pullback`
+* `AAPL`
+* `AMD`
+* `AMZN`
+* `META`
+* `SPY`
+* `QQQ`
+* `IWM`
+* `ARKK`
+* `MSFT`
+* `NVDA`
 
-Additional symbols such as `AAPL`, `AMD`, `AMZN`, `META`, `SPY`, `QQQ`, and `IWM` can be staged in commented `[[symbols]]` blocks and re-enabled later by uncommenting them.
+All active symbols currently use plain `macd_pullback` in `bot_config.toml`.
 
 The current `macd_pullback` implementation is built around:
 
@@ -101,7 +113,11 @@ The current `macd_pullback` implementation is built around:
 * EMA-band-based stop placement with a `1.5R` target
 * optional strategy exits that can be toggled on later for experiments
 
-Recent NVDA backtest sweeps suggest a better exploratory baseline than the original `EMA200` setup: `ema_band_window=72`, `require_pullback_breakout=true`, and `pullback_breakout_lookback=3`. This is currently treated as a research baseline for further chart review and exit tuning rather than a finalized production setting.
+The current `macd_pullback` baseline uses the promoted shared defaults around `ema_band_window=72`, `require_pullback_breakout=true`, `pullback_breakout_lookback=3`, and the newer slope-based MACD failure exit settings.
+
+There is also a new `vwap_rsi_mean_reversion` strategy for research and comparison work. It uses intraday VWAP as the mean, RSI as the stretch signal, a light stabilization/reversal confirmation before entry, a recent-extreme stop model, and a configurable VWAP-targeted take-profit. As of April 21, 2026, it remains a research strategy rather than the live paper-trading baseline because its first-pass results were mixed across symbols: promising on `NVDA`, but weaker than `macd_pullback` on `MSFT`.
+
+There is also an experimental `macd_pullback_xgboost_filter` strategy path plus a pooled XGBoost trainer. As of April 21, 2026, the pooled filter had been implemented and backtested, but it was not adopted for the April 22, 2026 paper-trading session because the final out-of-sample holdout still underperformed plain `macd_pullback` on profit factor and average return.
 
 #### 4. Run a preflight check
 
@@ -155,10 +171,22 @@ You can combine fixed overrides with a sweep as long as the swept parameter itse
 python -m trading_bot.backtest --symbol NVDA --strategy macd_pullback --start 2025-03-31 --end 2026-03-31 --strategy-param require_pullback_breakout=true --sweep-param ema_band_window --sweep-values 50,72,100,200
 ```
 
+The same workflow can be used for the mean-reversion strategy. For example:
+
+```bash
+python -m trading_bot.backtest --symbol NVDA --strategy vwap_rsi_mean_reversion --start 2025-04-21 --end 2026-04-21 --sweep-param max_bars_in_trade --sweep-values 6,9,12,15,18
+```
+
 To save a run under the team-shared folder intended for Git commits, add `--shared`:
 
 ```bash
 python -m trading_bot.backtest --symbol MSFT --strategy macd_pullback --start 2025-01-01 --end 2025-03-31 --shared
+```
+
+For the pooled XGBoost research workflow, use the separate training entry point. It trains one shared artifact across the active symbol set, selects a threshold on a validation window, and writes a report plus per-symbol comparison CSV:
+
+```bash
+python -m trading_bot.train_xgboost_filter --train-start 2023-01-03 --train-end 2024-12-31 --validation-start 2025-01-01 --validation-end 2025-09-30 --test-start 2025-10-01 --test-end 2026-04-21
 ```
 
 Example run folder name:
@@ -195,8 +223,8 @@ Each run can also contain a `trade_charts/` folder with one zoomed candlestick c
 
 * trade ID and symbol in the chart title
 * signed return and exit reason in the filename
-* `EMA12`, `EMA26`, and `EMA200` high/close/low overlays
-* a MACD panel under the price chart
+* strategy-aware overlays such as `EMA12`, `EMA26`, `EMA200` high/close/low bands, or `VWAP`
+* a strategy-aware indicator panel such as MACD or RSI under the price chart when available
 
 `decision_id` links the decision log, trade log, and strategy context entries together.
 

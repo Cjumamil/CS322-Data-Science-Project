@@ -1,0 +1,9 @@
+Archived on 2026-04-21 because the root-level CURRENT_STRATEGY_BRIEF.md had become stale.
+
+Current strategy status should be read from:
+- README.md
+- DECISIONS.md
+- RESEARCH_LOG.md
+- bot_config.toml
+
+The archived brief is kept only as historical context.

@@ -36,6 +36,7 @@ class PendingOrder:
     reason: str
     signal_time: datetime
     entry_risk_plan: dict | None = None
+    signal_context: dict | None = None
 
 
 @dataclass
@@ -50,7 +51,10 @@ class SimulatedPosition:
     stop_price: float
     take_profit_price: float
     stop_source: str
+    take_profit_source: str
     risk_reward_multiple: float | None
+    entry_signal_context: dict | None = None
+    entry_fill_context: dict | None = None
 
 
 @dataclass
@@ -75,9 +79,13 @@ class TradeRecord:
     stop_distance: float
     stop_distance_frac_of_price: float
     stop_source: str
+    take_profit_source: str
     risk_reward_multiple: float | None
     time_stop_triggered: bool
     macd_failure_triggered: bool
+    entry_signal_context_json: str | None
+    entry_fill_context_json: str | None
+    exit_context_json: str | None
 
 
 @dataclass(frozen=True)
@@ -337,6 +345,7 @@ def resolve_strategy_config(raw_config: dict, symbol: str, strategy_name: str | 
         raise ValueError("Could not resolve a strategy to backtest.")
 
     strategy_config["name"] = strategy_name
+    strategy_config["symbol"] = symbol.upper()
     if interval_override is not None:
         strategy_config["interval"] = interval_override
 
@@ -346,6 +355,13 @@ def resolve_strategy_config(raw_config: dict, symbol: str, strategy_name: str | 
 def format_timestamp(timestamp: datetime) -> str:
     """Return an ISO timestamp string."""
     return timestamp.isoformat()
+
+
+def serialize_strategy_context(context: dict | None) -> str | None:
+    """Serialize a strategy-context snapshot so trade CSV rows stay self-contained."""
+    if context is None:
+        return None
+    return json.dumps(context, sort_keys=True)
 
 
 def calculate_trade_pnl(side: str, qty: int, entry_price: float, exit_price: float) -> float:
@@ -409,6 +425,7 @@ def close_position(
     exit_time: datetime,
     exit_price: float,
     exit_reason: str,
+    exit_context: dict | None,
     strategy_name: str,
     interval: str,
     symbol: str,
@@ -439,9 +456,13 @@ def close_position(
         stop_distance=round(abs(position.entry_price - position.stop_price), 4),
         stop_distance_frac_of_price=round(abs(position.entry_price - position.stop_price) / position.entry_price, 6),
         stop_source=position.stop_source,
+        take_profit_source=position.take_profit_source,
         risk_reward_multiple=position.risk_reward_multiple,
         time_stop_triggered=exit_reason == "time_stop",
         macd_failure_triggered=exit_reason == "macd_failure",
+        entry_signal_context_json=serialize_strategy_context(position.entry_signal_context),
+        entry_fill_context_json=serialize_strategy_context(position.entry_fill_context),
+        exit_context_json=serialize_strategy_context(exit_context),
     )
 
 
@@ -551,15 +572,29 @@ def simulate_backtest(
                     stop_price=exit_levels["stop_price"],
                     take_profit_price=exit_levels["take_profit_price"],
                     stop_source=exit_levels["stop_source"],
+                    take_profit_source=exit_levels.get("take_profit_source", "percent_of_entry"),
                     risk_reward_multiple=exit_levels["risk_reward_multiple"],
+                    entry_signal_context=pending_order.signal_context,
+                    entry_fill_context=strategy.build_strategy_signals(
+                        row,
+                        PositionContext(
+                            side=resulting_side,
+                            entry_price=bar_open,
+                            bars_in_trade=1,
+                            entry_signal_time=format_timestamp(pending_order.signal_time),
+                        ),
+                    ),
                 )
             elif position is not None and pending_order.action == exit_action_for_position_side(position.side):
+                exit_position_context = build_backtest_position_context(position, bar_number)
                 closed_trade = close_position(
                     trade_number=len(trades) + 1,
                     position=position,
                     exit_time=timestamp,
                     exit_price=bar_open,
                     exit_reason=pending_order.reason,
+                    exit_context=pending_order.signal_context
+                    or strategy.build_strategy_signals(row, exit_position_context),
                     strategy_name=strategy.name,
                     interval=strategy.interval,
                     symbol=symbol,
@@ -574,12 +609,14 @@ def simulate_backtest(
         if position is not None:
             exit_price, exit_reason = intrabar_exit_price(position, row)
             if exit_reason is not None and exit_price is not None:
+                exit_position_context = build_backtest_position_context(position, bar_number)
                 closed_trade = close_position(
                     trade_number=len(trades) + 1,
                     position=position,
                     exit_time=timestamp,
                     exit_price=exit_price,
                     exit_reason=exit_reason,
+                    exit_context=strategy.build_strategy_signals(row, exit_position_context),
                     strategy_name=strategy.name,
                     interval=strategy.interval,
                     symbol=symbol,
@@ -590,12 +627,14 @@ def simulate_backtest(
                 position = None
 
         if position is not None and flatten_window_active:
+            exit_position_context = build_backtest_position_context(position, bar_number)
             closed_trade = close_position(
                 trade_number=len(trades) + 1,
                 position=position,
                 exit_time=timestamp,
                 exit_price=bar_close,
                 exit_reason="flatten_before_close",
+                exit_context=strategy.build_strategy_signals(row, exit_position_context),
                 strategy_name=strategy.name,
                 interval=strategy.interval,
                 symbol=symbol,
@@ -628,6 +667,7 @@ def simulate_backtest(
                     action=exit_action,
                     reason=strategy.exit_reason(row, position_context),
                     signal_time=timestamp,
+                    signal_context=strategy.build_strategy_signals(row, position_context),
                 )
         else:
             if flatten_window_active:
@@ -643,17 +683,20 @@ def simulate_backtest(
                         "long" if entry_action == "BUY" else "short",
                         risk_settings,
                     ),
+                    signal_context=strategy.build_strategy_signals(row),
                 )
 
     if position is not None:
         final_timestamp = analysis_df.index[-1]
         final_close = float(analysis_df.iloc[-1]["Close"])
+        final_position_context = build_backtest_position_context(position, len(analysis_df))
         closed_trade = close_position(
             trade_number=len(trades) + 1,
             position=position,
             exit_time=final_timestamp,
             exit_price=final_close,
             exit_reason="end_of_backtest",
+            exit_context=strategy.build_strategy_signals(analysis_df.iloc[-1], final_position_context),
             strategy_name=strategy.name,
             interval=strategy.interval,
             symbol=symbol,
@@ -805,6 +848,29 @@ def build_backtest_summary(
             "bearish_reentry_bar_count": int(
                 analysis_df.get("bearish_reentry_trigger", pd.Series(dtype=bool)).sum()
             ),
+            "entries_allowed_bar_count": int(analysis_df.get("entries_allowed", pd.Series(dtype=bool)).sum()),
+            "long_setup_count": int(analysis_df.get("long_setup", pd.Series(dtype=bool)).sum()),
+            "short_setup_count": int(analysis_df.get("short_setup", pd.Series(dtype=bool)).sum()),
+            "long_confirmation_count": int(
+                analysis_df.get("stabilization_confirmation_long", pd.Series(dtype=bool)).sum()
+            ),
+            "short_confirmation_count": int(
+                analysis_df.get("stabilization_confirmation_short", pd.Series(dtype=bool)).sum()
+            ),
+            "long_stretched_count": int(
+                analysis_df.get("stretched_from_vwap_long", pd.Series(dtype=bool)).sum()
+            ),
+            "short_stretched_count": int(
+                analysis_df.get("stretched_from_vwap_short", pd.Series(dtype=bool)).sum()
+            ),
+            "rsi_oversold_count": int(analysis_df.get("rsi_oversold", pd.Series(dtype=bool)).sum()),
+            "rsi_overbought_count": int(analysis_df.get("rsi_overbought", pd.Series(dtype=bool)).sum()),
+            "trend_filter_blocked_long_count": int(
+                analysis_df.get("trend_filter_blocked_long", pd.Series(dtype=bool)).sum()
+            ),
+            "trend_filter_blocked_short_count": int(
+                analysis_df.get("trend_filter_blocked_short", pd.Series(dtype=bool)).sum()
+            ),
             "long_entry_signal_count": int(
                 analysis_df.get("long_entry_signal", pd.Series(dtype=bool)).sum()
             ),
@@ -953,7 +1019,7 @@ def plot_trade_zoom_charts(
     output_dir: Path,
     interval: str,
 ) -> list[Path]:
-    """Save one zoomed candlestick + MACD chart per completed trade."""
+    """Save one zoomed candlestick chart plus one strategy-aware indicator panel per trade."""
     try:
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
@@ -1058,6 +1124,13 @@ def plot_trade_zoom_charts(
                 )
             )
 
+    def detect_indicator_kind(window_df: pd.DataFrame) -> str | None:
+        if {"MACD", "signal_line", "histogram"}.issubset(window_df.columns):
+            return "macd"
+        if "RSI" in window_df.columns:
+            return "rsi"
+        return None
+
     for trade_number, trade in enumerate(trades_df.to_dict("records"), start=1):
         entry_time = _aligned_timestamp_for_index(trade["entry_time"], prepared_df.index)
         exit_time = _aligned_timestamp_for_index(trade["exit_time"], prepared_df.index)
@@ -1091,9 +1164,15 @@ def plot_trade_zoom_charts(
         signal_x = max(0, min(len(window_df) - 1, int(window_df.index.searchsorted(entry_signal_time, side="left"))))
         entry_x = max(0, min(len(window_df) - 1, int(window_df.index.searchsorted(entry_time, side="left"))))
         exit_x = max(0, min(len(window_df) - 1, int(window_df.index.searchsorted(exit_time, side="left"))))
+        indicator_kind = detect_indicator_kind(window_df)
 
-        fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True, height_ratios=[3, 2])
-        price_ax, macd_ax = axes
+        if indicator_kind is None:
+            fig, price_ax = plt.subplots(1, 1, figsize=(14, 5), sharex=True)
+            axes = [price_ax]
+            indicator_ax = None
+        else:
+            fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True, height_ratios=[3, 2])
+            price_ax, indicator_ax = axes
         fig.patch.set_facecolor("#0c1324")
         for axis in axes:
             axis.set_facecolor("#111a2e")
@@ -1101,9 +1180,10 @@ def plot_trade_zoom_charts(
             for spine in axis.spines.values():
                 spine.set_color("#4a5d82")
         shade_session_phases(price_ax, phase_labels)
-        shade_session_phases(macd_ax, phase_labels)
         draw_day_boundaries(price_ax, local_index)
-        draw_day_boundaries(macd_ax, local_index)
+        if indicator_ax is not None:
+            shade_session_phases(indicator_ax, phase_labels)
+            draw_day_boundaries(indicator_ax, local_index)
 
         draw_candlesticks(price_ax, window_df, x_positions)
         if "EMA12" in window_df.columns:
@@ -1116,6 +1196,8 @@ def plot_trade_zoom_charts(
             price_ax.plot(x_positions, window_df["EMA200_close"], label="EMA200 close", linewidth=1.0, color="#bb8fce", zorder=4)
         if "EMA200_low" in window_df.columns:
             price_ax.plot(x_positions, window_df["EMA200_low"], label="EMA200 low", linewidth=1.0, color="#48c9b0", zorder=4)
+        if "VWAP" in window_df.columns:
+            price_ax.plot(x_positions, window_df["VWAP"], label="VWAP", linewidth=1.1, color="#f4d03f", zorder=4)
 
         price_ax.axhline(float(trade["stop_price"]), color="#ff6b6b", linestyle="--", linewidth=1.0, alpha=0.8, label="Stop", zorder=1)
         price_ax.axhline(float(trade["take_profit_price"]), color="#19d3a2", linestyle="--", linewidth=1.0, alpha=0.8, label="Target", zorder=1)
@@ -1145,26 +1227,60 @@ def plot_trade_zoom_charts(
         for text in price_legend.get_texts():
             text.set_color("#f5f7fa")
 
-        macd_ax.plot(x_positions, window_df["MACD"], label="MACD", linewidth=1.0, color="#5dade2")
-        macd_ax.plot(x_positions, window_df["signal_line"], label="Signal", linewidth=1.0, color="#f5b041")
-        histogram_values = window_df["histogram"].fillna(0)
-        histogram_previous = histogram_values.shift(1).fillna(0)
-        bar_colors = []
-        for current_value, previous_value in zip(histogram_values, histogram_previous):
-            if current_value >= 0:
-                bar_colors.append("#26c6b5" if current_value >= previous_value else "#a9e5de")
-            else:
-                bar_colors.append("#ff5c6c" if current_value <= previous_value else "#f6c2cd")
-        macd_ax.bar(x_positions, window_df["histogram"], label="Histogram", alpha=0.8, width=0.82, color=bar_colors)
-        macd_ax.axhline(0, color="#f8f9f9", linewidth=0.8, alpha=0.6)
-        macd_ax.set_ylabel("MACD", color="#d8dee9")
-        macd_ax.set_xlabel("Time (EST/EDT)", color="#d8dee9")
-        macd_ax.grid(alpha=0.25, color="#31415f")
-        macd_legend = macd_ax.legend(loc="upper left")
-        macd_legend.get_frame().set_facecolor("#111a2e")
-        macd_legend.get_frame().set_edgecolor("#4a5d82")
-        for text in macd_legend.get_texts():
-            text.set_color("#f5f7fa")
+        if indicator_ax is not None and indicator_kind == "macd":
+            indicator_ax.plot(x_positions, window_df["MACD"], label="MACD", linewidth=1.0, color="#5dade2")
+            indicator_ax.plot(x_positions, window_df["signal_line"], label="Signal", linewidth=1.0, color="#f5b041")
+            histogram_values = window_df["histogram"].fillna(0)
+            histogram_previous = histogram_values.shift(1).fillna(0)
+            bar_colors = []
+            for current_value, previous_value in zip(histogram_values, histogram_previous):
+                if current_value >= 0:
+                    bar_colors.append("#26c6b5" if current_value >= previous_value else "#a9e5de")
+                else:
+                    bar_colors.append("#ff5c6c" if current_value <= previous_value else "#f6c2cd")
+            indicator_ax.bar(
+                x_positions,
+                window_df["histogram"],
+                label="Histogram",
+                alpha=0.8,
+                width=0.82,
+                color=bar_colors,
+            )
+            indicator_ax.axhline(0, color="#f8f9f9", linewidth=0.8, alpha=0.6)
+            indicator_ax.set_ylabel("MACD", color="#d8dee9")
+
+        if indicator_ax is not None and indicator_kind == "rsi":
+            indicator_ax.plot(x_positions, window_df["RSI"], label="RSI", linewidth=1.2, color="#7ed6df")
+            if "rsi_oversold_level" in window_df.columns:
+                indicator_ax.axhline(
+                    float(window_df["rsi_oversold_level"].iloc[-1]),
+                    color="#19d3a2",
+                    linestyle="--",
+                    linewidth=0.9,
+                    alpha=0.8,
+                    label="Oversold",
+                )
+            if "rsi_overbought_level" in window_df.columns:
+                indicator_ax.axhline(
+                    float(window_df["rsi_overbought_level"].iloc[-1]),
+                    color="#ff6b6b",
+                    linestyle="--",
+                    linewidth=0.9,
+                    alpha=0.8,
+                    label="Overbought",
+                )
+            indicator_ax.axhline(50, color="#f8f9f9", linewidth=0.8, alpha=0.4)
+            indicator_ax.set_ylim(0, 100)
+            indicator_ax.set_ylabel("RSI", color="#d8dee9")
+
+        if indicator_ax is not None:
+            indicator_ax.set_xlabel("Time (EST/EDT)", color="#d8dee9")
+            indicator_ax.grid(alpha=0.25, color="#31415f")
+            indicator_legend = indicator_ax.legend(loc="upper left")
+            indicator_legend.get_frame().set_facecolor("#111a2e")
+            indicator_legend.get_frame().set_edgecolor("#4a5d82")
+            for text in indicator_legend.get_texts():
+                text.set_color("#f5f7fa")
 
         if len(window_df) > 1:
             tick_count = min(6, len(window_df))
@@ -1175,8 +1291,9 @@ def plot_trade_zoom_charts(
         for position in tick_positions:
             timestamp = local_index[int(position)]
             tick_labels.append(pd.Timestamp(timestamp).strftime("%m-%d %H:%M"))
-        macd_ax.set_xticks(tick_positions)
-        macd_ax.set_xticklabels(tick_labels, rotation=0, color="#d8dee9")
+        target_x_axis = price_ax if indicator_ax is None else indicator_ax
+        target_x_axis.set_xticks(tick_positions)
+        target_x_axis.set_xticklabels(tick_labels, rotation=0, color="#d8dee9")
 
         fig.tight_layout()
         signed_return_pct = float(trade["return_pct"])
@@ -1216,7 +1333,13 @@ def plot_backtest_chart(
     if window_df.empty:
         return None
 
-    indicator_panels = 3 if "MACD" in window_df.columns else 2
+    indicator_kind = None
+    if {"MACD", "signal_line", "histogram"}.issubset(window_df.columns):
+        indicator_kind = "macd"
+    elif "RSI" in window_df.columns:
+        indicator_kind = "rsi"
+
+    indicator_panels = 3 if indicator_kind is not None else 2
     fig, axes = plt.subplots(indicator_panels, 1, figsize=(15, 10), sharex=True)
 
     if indicator_panels == 2:
@@ -1230,6 +1353,8 @@ def plot_backtest_chart(
         price_ax.plot(window_df.index, window_df["EMA200"], label="EMA200", linewidth=1.0)
     if "EMA200_close" in window_df.columns:
         price_ax.plot(window_df.index, window_df["EMA200_close"], label="EMA200 close", linewidth=1.0)
+    if "VWAP" in window_df.columns:
+        price_ax.plot(window_df.index, window_df["VWAP"], label="VWAP", linewidth=1.0)
     if "SMA_FAST" in window_df.columns:
         price_ax.plot(window_df.index, window_df["SMA_FAST"], label="SMA fast", linewidth=1.0)
     if "SMA_SLOW" in window_df.columns:
@@ -1270,12 +1395,23 @@ def plot_backtest_chart(
     price_ax.legend(loc="upper left")
     price_ax.grid(alpha=0.3)
 
-    if indicator_ax is not None:
+    if indicator_ax is not None and indicator_kind == "macd":
         indicator_ax.plot(window_df.index, window_df["MACD"], label="MACD", linewidth=1.0)
         indicator_ax.plot(window_df.index, window_df["signal_line"], label="Signal", linewidth=1.0)
         indicator_ax.bar(window_df.index, window_df["histogram"], label="Histogram", alpha=0.35, width=0.01)
         indicator_ax.axhline(0, color="black", linewidth=0.8, alpha=0.6)
         indicator_ax.set_ylabel("MACD")
+        indicator_ax.legend(loc="upper left")
+        indicator_ax.grid(alpha=0.3)
+    if indicator_ax is not None and indicator_kind == "rsi":
+        indicator_ax.plot(window_df.index, window_df["RSI"], label="RSI", linewidth=1.0)
+        if "rsi_oversold_level" in window_df.columns:
+            indicator_ax.axhline(window_df["rsi_oversold_level"].iloc[-1], color="green", linestyle="--", linewidth=0.8)
+        if "rsi_overbought_level" in window_df.columns:
+            indicator_ax.axhline(window_df["rsi_overbought_level"].iloc[-1], color="red", linestyle="--", linewidth=0.8)
+        indicator_ax.axhline(50, color="black", linewidth=0.8, alpha=0.4)
+        indicator_ax.set_ylim(0, 100)
+        indicator_ax.set_ylabel("RSI")
         indicator_ax.legend(loc="upper left")
         indicator_ax.grid(alpha=0.3)
 

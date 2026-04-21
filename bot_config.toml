@@ -14,6 +14,7 @@ order_status_timeout_seconds = 30 # Maximum time to wait for order status change
 enable_broker_side_stop_loss = true
 force_test_trade = false # When true, bypasses strategy signals and forces a manual test trade.
 force_direction = "SELL" # BUY enters long or covers short; SELL enters short or exits long.
+require_easy_to_borrow_for_short_entries = false # When true, block short entries unless Alpaca also marks the asset easy to borrow.
 
 # Shared risk settings currently applied across all configured symbols.
 [risk]
@@ -29,11 +30,14 @@ max_total_position_fraction_of_buying_power = 0.08 # Block new entries when tota
 # selected strategy name, so you only need to specify overrides when a symbol
 # should behave differently from the shared default.
 #
-# Quick activation workflow:
-# 1. Uncomment a `[[symbols]]` block and its `[symbols.strategy]` block.
-# 2. Keep only `name = "macd_pullback"` unless you intentionally want overrides.
-#
-# Expansion watchlist using the shared default `macd_pullback` settings:
+# Current paper-trading config:
+# - All active symbols below intentionally use plain `macd_pullback`.
+# - `vwap_rsi_mean_reversion` is now available in code for backtests and future
+#   paper-trading experiments, but it is still in research mode and has not
+#   been promoted into the live symbol config yet.
+# - The pooled `macd_pullback_xgboost_filter` path exists in code, but it is
+#   still experimental and was not enabled for the April 22, 2026 session.
+# - Keep symbol blocks minimal unless you intentionally want per-symbol overrides.
 
 [[symbols]]
 ticker = "AAPL"
@@ -83,7 +87,6 @@ ticker = "ARKK"
 [symbols.strategy]
 name = "macd_pullback"
 
-#
 # Legacy ALB experiment kept for reference:
 # [[symbols]]
 # ticker = "ALB"

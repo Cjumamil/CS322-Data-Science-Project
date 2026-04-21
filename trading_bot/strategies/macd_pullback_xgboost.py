@@ -8,7 +8,7 @@ import pandas as pd
 
 from trading_bot.strategies.base import PositionContext, TradingStrategy
 from trading_bot.strategies.macd_pullback import MacdPullbackStrategy
-from trading_bot.xgboost_filter import predict_trade_quality_probabilities
+from trading_bot.xgboost_filter import apply_xgboost_entry_filter
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,7 @@ class MacdPullbackXgboostFilterStrategy(TradingStrategy):
     base_strategy: MacdPullbackStrategy
     xgb_model_path: str
     xgb_probability_threshold: float
+    symbol: str | None = None
     name: str = "macd_pullback_xgboost_filter"
     version: str = "v1"
 
@@ -37,30 +38,9 @@ class MacdPullbackXgboostFilterStrategy(TradingStrategy):
         work = self.base_strategy.prepare_dataframe(df)
         if not self.xgb_model_path:
             raise ValueError("macd_pullback_xgboost_filter requires xgb_model_path in the strategy config.")
-
-        base_entry_action = work["entry_action"].copy()
-        probabilities = predict_trade_quality_probabilities(work, self.xgb_model_path)
-        filter_pass = probabilities >= float(self.xgb_probability_threshold)
-
-        work["base_entry_action"] = base_entry_action
-        work["xgb_trade_quality_prob"] = probabilities
-        work["xgb_probability_threshold"] = float(self.xgb_probability_threshold)
-        work["xgb_filter_pass"] = filter_pass.fillna(False)
-        work["entry_blocked_by_xgb_filter"] = base_entry_action.notna() & ~work["xgb_filter_pass"]
-        work["entry_action"] = base_entry_action.where(work["xgb_filter_pass"])
-        work["long_entry_signal"] = work["entry_action"] == "BUY"
-        work["short_entry_signal"] = work["entry_action"] == "SELL"
-
-        exposure_signal = pd.Series(index=work.index, dtype="float64")
-        exposure_signal.loc[work["long_entry_signal"]] = 1
-        exposure_signal.loc[work["short_entry_signal"]] = -1
-        work["signal"] = exposure_signal.ffill().fillna(0).astype(int)
-        work["crossover"] = 0
-        work.loc[work["long_entry_signal"], "crossover"] = 1
-        work.loc[work["short_entry_signal"], "crossover"] = -1
-        work["strategy_return"] = work["signal"].shift(1).fillna(0) * work["daily_return"].fillna(0)
-
-        return work
+        if self.symbol:
+            work["symbol"] = str(self.symbol).upper()
+        return apply_xgboost_entry_filter(work, self.xgb_model_path, float(self.xgb_probability_threshold))
 
     def recent_display_columns(self) -> list[str]:
         return [
@@ -124,6 +104,7 @@ class MacdPullbackXgboostFilterStrategy(TradingStrategy):
             "xgb_model_path": self.xgb_model_path,
             "xgb_probability_threshold": float(self.xgb_probability_threshold),
             "entry_filter_model": "xgboost_binary_classifier",
+            "symbol": None if self.symbol is None else str(self.symbol).upper(),
         }
 
     def build_strategy_signals(self, latest_row: pd.Series, position_context: PositionContext | None = None) -> dict:

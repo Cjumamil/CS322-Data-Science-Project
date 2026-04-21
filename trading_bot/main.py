@@ -155,6 +155,7 @@ def evaluate_entry_safeguards(
     latest_close: float,
     entry_qty: int,
     buying_power: float,
+    execution_settings,
     risk_settings,
 ) -> tuple[str | None, dict]:
     """Return an optional block reason plus asset/exposure metadata for a candidate entry."""
@@ -176,8 +177,11 @@ def evaluate_entry_safeguards(
     if not asset_flags["tradable"]:
         return "asset_not_tradable", metadata
 
-    if action == "SELL" and not (asset_flags["shortable"] and asset_flags["easy_to_borrow"]):
-        return "asset_not_shortable", metadata
+    if action == "SELL":
+        if not asset_flags["shortable"]:
+            return "asset_not_shortable", metadata
+        if execution_settings.require_easy_to_borrow_for_short_entries and not asset_flags["easy_to_borrow"]:
+            return "asset_not_easy_to_borrow", metadata
 
     exposure_cap = risk_settings.max_total_position_fraction_of_buying_power
     if exposure_cap > 0 and projected_exposure_fraction > exposure_cap:
@@ -484,6 +488,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             latest_close=latest_close,
             entry_qty=qty,
             buying_power=buying_power,
+            execution_settings=config.execution,
             risk_settings=config.risk,
         )
         if block_reason is None:

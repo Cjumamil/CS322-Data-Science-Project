@@ -151,6 +151,23 @@ def take_profit_price(
     return None
 
 
+def explicit_take_profit_price(
+    entry_price: float,
+    position_side: str,
+    take_profit_price_value: float | None,
+) -> float | None:
+    """Validate and return one explicit take-profit target price."""
+    if take_profit_price_value is None:
+        return None
+
+    target_price = round_price(float(take_profit_price_value))
+    if position_side == "long":
+        return target_price if target_price > entry_price else None
+    if position_side == "short":
+        return target_price if target_price < entry_price else None
+    return None
+
+
 def take_profit_price_from_risk(
     entry_price: float,
     stop_price: float,
@@ -188,6 +205,7 @@ def build_exit_levels_from_entry_price(
         "stop_price": stop_price,
         "take_profit_price": target_price,
         "stop_source": "percent_of_entry",
+        "take_profit_source": "percent_of_entry",
         "risk_reward_multiple": None,
         "entry_signal_time": None,
         "stop_distance": abs(entry_price - stop_price),
@@ -214,8 +232,10 @@ def build_exit_levels_from_entry_plan(
         )
 
     stop_price = entry_risk_plan.get("stop_price")
+    explicit_target_price = entry_risk_plan.get("take_profit_price")
     risk_reward_multiple = entry_risk_plan.get("risk_reward_multiple")
     stop_source = entry_risk_plan.get("stop_source", "custom")
+    take_profit_source = entry_risk_plan.get("take_profit_source", "custom")
     max_stop_distance_frac_of_price = entry_risk_plan.get("max_stop_distance_frac_of_price")
     if stop_price is None:
         return build_exit_levels_from_entry_price(
@@ -235,7 +255,15 @@ def build_exit_levels_from_entry_plan(
     if not stop_validation["is_valid"]:
         return None
 
-    if risk_reward_multiple is not None:
+    if explicit_target_price is not None:
+        target_price = explicit_take_profit_price(
+            entry_price,
+            position_side,
+            explicit_target_price,
+        )
+        if target_price is None:
+            return None
+    elif risk_reward_multiple is not None:
         target_price = take_profit_price_from_risk(
             entry_price,
             stop_price,
@@ -253,6 +281,7 @@ def build_exit_levels_from_entry_plan(
         "stop_price": stop_price,
         "take_profit_price": target_price,
         "stop_source": stop_source,
+        "take_profit_source": take_profit_source,
         "risk_reward_multiple": risk_reward_multiple,
         "entry_signal_time": None if entry_risk_plan is None else entry_risk_plan.get("entry_signal_time"),
         "stop_distance": stop_validation["stop_distance"],
@@ -281,6 +310,7 @@ def build_exit_levels_for_live_position(
     stop_price = None
     take_profit_target = None
     stop_source = "percent_of_entry"
+    take_profit_source = "percent_of_entry"
     stop_distance = None
     stop_distance_frac_of_price = None
     max_stop_distance_frac_of_price = None
@@ -293,6 +323,7 @@ def build_exit_levels_for_live_position(
             stop_source = str(active_exit_levels.get("stop_source", "session_active"))
         if raw_take_profit is not None:
             take_profit_target = round_price(float(raw_take_profit))
+            take_profit_source = str(active_exit_levels.get("take_profit_source", "session_active"))
         stop_distance = active_exit_levels.get("stop_distance")
         stop_distance_frac_of_price = active_exit_levels.get("stop_distance_frac_of_price")
         max_stop_distance_frac_of_price = active_exit_levels.get("max_stop_distance_frac_of_price")
@@ -350,6 +381,7 @@ def build_exit_levels_for_live_position(
         "stop_price": stop_price,
         "take_profit_price": take_profit_target,
         "stop_source": stop_source,
+        "take_profit_source": take_profit_source,
         "risk_reward_multiple": risk_reward_multiple,
         "entry_signal_time": None if active_exit_levels is None else active_exit_levels.get("entry_signal_time"),
         "stop_distance": stop_distance,

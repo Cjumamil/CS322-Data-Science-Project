@@ -24,6 +24,7 @@ class ExecutionSettings:
     enable_broker_side_stop_loss: bool
     force_test_trade: bool
     force_direction: str
+    require_easy_to_borrow_for_short_entries: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ def load_config(path: str = "bot_config.toml") -> BotConfig:
             strategy=create_strategy(
                 {
                     **default_strategy_config(entry["strategy"]["name"]),
+                    "symbol": entry["ticker"],
                     **entry["strategy"],
                 }
             ),
