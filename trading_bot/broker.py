@@ -9,9 +9,6 @@ from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrderByIdRequest, GetOrdersRequest, MarketOrderRequest, StopOrderRequest
 
 load_dotenv()
-
-API_KEY = os.getenv("ALPACA_API_KEY")
-SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 DEFAULT_API_REQUEST_TIMEOUT_SECONDS = 20
 
 FINAL_ORDER_STATUSES = {
@@ -73,14 +70,32 @@ def get_position_qty(position) -> int:
     return int(abs(_safe_float(getattr(position, "qty", 0))))
 
 
-def connect_alpaca(*, paper: bool = True) -> TradingClient:
-    """Create an Alpaca client from environment variables."""
-    if not API_KEY or not SECRET_KEY:
+def connect_alpaca(
+    *,
+    paper: bool = True,
+    api_key_env: str = "ALPACA_API_KEY",
+    secret_key_env: str = "ALPACA_SECRET_KEY",
+    fallback_api_key_env: str = "",
+    fallback_secret_key_env: str = "",
+) -> TradingClient:
+    """Create an Alpaca client from configurable environment variables."""
+    api_key = os.getenv(api_key_env) or (os.getenv(fallback_api_key_env) if fallback_api_key_env else None)
+    secret_key = os.getenv(secret_key_env) or (
+        os.getenv(fallback_secret_key_env) if fallback_secret_key_env else None
+    )
+    if not api_key or not secret_key:
+        key_names = api_key_env
+        secret_names = secret_key_env
+        if fallback_api_key_env:
+            key_names = f"{key_names} or {fallback_api_key_env}"
+        if fallback_secret_key_env:
+            secret_names = f"{secret_names} or {fallback_secret_key_env}"
         raise ValueError(
-            "Missing Alpaca credentials. Make sure your .env file contains ALPACA_API_KEY and ALPACA_SECRET_KEY."
+            "Missing Alpaca credentials. "
+            f"Make sure your .env file contains {key_names} and {secret_names}."
         )
 
-    trading_client = TradingClient(API_KEY, SECRET_KEY, paper=paper)
+    trading_client = TradingClient(api_key, secret_key, paper=paper)
     _inject_default_request_timeout(trading_client, DEFAULT_API_REQUEST_TIMEOUT_SECONDS)
     return trading_client
 

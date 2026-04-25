@@ -16,13 +16,27 @@ load_dotenv()
 NEW_YORK_TIMEZONE = ZoneInfo("America/New_York")
 
 
-def _create_data_client() -> StockHistoricalDataClient:
-    """Create an Alpaca market data client from environment variables."""
-    api_key = os.getenv("ALPACA_API_KEY")
-    secret_key = os.getenv("ALPACA_SECRET_KEY")
+def _create_data_client(
+    *,
+    api_key_env: str = "ALPACA_API_KEY",
+    secret_key_env: str = "ALPACA_SECRET_KEY",
+    fallback_api_key_env: str = "",
+    fallback_secret_key_env: str = "",
+) -> StockHistoricalDataClient:
+    """Create an Alpaca market data client from configurable environment variables."""
+    api_key = os.getenv(api_key_env) or (os.getenv(fallback_api_key_env) if fallback_api_key_env else None)
+    secret_key = os.getenv(secret_key_env) or (
+        os.getenv(fallback_secret_key_env) if fallback_secret_key_env else None
+    )
     if not api_key or not secret_key:
+        key_names = api_key_env
+        secret_names = secret_key_env
+        if fallback_api_key_env:
+            key_names = f"{key_names} or {fallback_api_key_env}"
+        if fallback_secret_key_env:
+            secret_names = f"{secret_names} or {fallback_secret_key_env}"
         raise ValueError(
-            "Missing Alpaca credentials. Set ALPACA_API_KEY and ALPACA_SECRET_KEY as environment variables."
+            f"Missing Alpaca credentials. Set {key_names} and {secret_names} as environment variables."
         )
 
     return StockHistoricalDataClient(api_key, secret_key)
@@ -80,7 +94,17 @@ def _normalize_request_timestamp(timestamp: datetime) -> datetime:
     return timestamp.astimezone(timezone.utc)
 
 
-def _fetch_bars(symbol: str, interval: str, start: datetime, end: datetime) -> pd.DataFrame:
+def _fetch_bars(
+    symbol: str,
+    interval: str,
+    start: datetime,
+    end: datetime,
+    *,
+    api_key_env: str = "ALPACA_API_KEY",
+    secret_key_env: str = "ALPACA_SECRET_KEY",
+    fallback_api_key_env: str = "",
+    fallback_secret_key_env: str = "",
+) -> pd.DataFrame:
     """Fetch raw bars from Alpaca between explicit timestamps."""
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
@@ -92,7 +116,12 @@ def _fetch_bars(symbol: str, interval: str, start: datetime, end: datetime) -> p
         feed=DataFeed.IEX,
     )
 
-    bars = _create_data_client().get_stock_bars(request)
+    bars = _create_data_client(
+        api_key_env=api_key_env,
+        secret_key_env=secret_key_env,
+        fallback_api_key_env=fallback_api_key_env,
+        fallback_secret_key_env=fallback_secret_key_env,
+    ).get_stock_bars(request)
     df = bars.df.copy()
 
     if df.empty:
@@ -118,7 +147,16 @@ def _fetch_bars(symbol: str, interval: str, start: datetime, end: datetime) -> p
     return cleaned
 
 
-def download_data(symbol: str, interval: str, lookback_bars: int) -> pd.DataFrame:
+def download_data(
+    symbol: str,
+    interval: str,
+    lookback_bars: int,
+    *,
+    api_key_env: str = "ALPACA_API_KEY",
+    secret_key_env: str = "ALPACA_SECRET_KEY",
+    fallback_api_key_env: str = "",
+    fallback_secret_key_env: str = "",
+) -> pd.DataFrame:
     """Download recent OHLCV bars from Alpaca for one symbol.
 
     `interval` controls the bar size, while `lookback_bars` controls how
@@ -130,6 +168,10 @@ def download_data(symbol: str, interval: str, lookback_bars: int) -> pd.DataFram
         interval,
         _estimate_request_start(end, interval, lookback_bars),
         end,
+        api_key_env=api_key_env,
+        secret_key_env=secret_key_env,
+        fallback_api_key_env=fallback_api_key_env,
+        fallback_secret_key_env=fallback_secret_key_env,
     )
     if len(cleaned) > lookback_bars:
         cleaned = cleaned.tail(lookback_bars).copy()
@@ -144,10 +186,23 @@ def download_data_range(
     end: datetime,
     *,
     warmup_bars: int = 0,
+    api_key_env: str = "ALPACA_API_KEY",
+    secret_key_env: str = "ALPACA_SECRET_KEY",
+    fallback_api_key_env: str = "",
+    fallback_secret_key_env: str = "",
 ) -> pd.DataFrame:
     """Download OHLCV bars for a specific historical range plus optional warmup."""
     request_start = start
     if warmup_bars > 0:
         request_start = start - (_interval_to_timedelta(interval) * warmup_bars * 12)
 
-    return _fetch_bars(symbol, interval, request_start, end)
+    return _fetch_bars(
+        symbol,
+        interval,
+        request_start,
+        end,
+        api_key_env=api_key_env,
+        secret_key_env=secret_key_env,
+        fallback_api_key_env=fallback_api_key_env,
+        fallback_secret_key_env=fallback_secret_key_env,
+    )

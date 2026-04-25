@@ -26,72 +26,189 @@ flatten_before_close = true # Use to prevent holding positions overnight
 flatten_minutes_before_close = 5
 max_total_position_fraction_of_buying_power = 0.08 # Block new entries when total deployed exposure would exceed this fraction of buying power.
 
-# One `[[symbols]]` block per stock. Strategy blocks inherit defaults from the
-# selected strategy name, so you only need to specify overrides when a symbol
-# should behave differently from the shared default.
-#
-# Current paper-trading config:
-# - All active symbols below intentionally use plain `macd_pullback`.
-# - `vwap_rsi_mean_reversion` is now available in code for backtests and future
-#   paper-trading experiments, but it is still in research mode and has not
-#   been promoted into the live symbol config yet.
-# - The pooled `macd_pullback_xgboost_filter` path exists in code, but it is
-#   still experimental and was not enabled for the April 22, 2026 session.
-# - Keep symbol blocks minimal unless you intentionally want per-symbol overrides.
+[logging]
+enable_full_decision_log = true # Keep the full per-cycle decision log; turn off later when routine polling rows become too noisy.
+enable_full_strategy_context_log = true # Keep the full JSONL context log for debugging while the bot is still evolving.
+enable_notable_decision_log = true # Keep the compact decision log that excludes HOLD/no_trade rows.
+enable_notable_strategy_context_log = true # Keep the compact context log that excludes HOLD/no_trade rows.
 
-[[symbols]]
+# One `[[accounts]]` block per paper account. Each account has its own
+# Alpaca credential environment variable names and its own `[[accounts.symbols]]`
+# strategy assignments. This lets the same ticker trade independently in
+# separate paper accounts for live strategy comparison.
+#
+# The `paper_trading` setting below defaults to `[bot].paper_trading`, but it
+# can be overridden per account when needed. The top-level legacy `[[symbols]]`
+# layout is still supported by the loader as a single default account.
+#
+# Current paper-trading comparison:
+# - `macd_pullback_paper` runs the promoted MACD pullback baseline.
+# - `vwap_rsi_paper` runs the VWAP + RSI mean-reversion strategy on a separate
+#   paper account. Set PAPER2_ALPACA_API_KEY / PAPER2_ALPACA_SECRET_KEY in `.env`.
+# - The MACD account keeps the legacy bare-symbol session-state keys; the VWAP
+#   account uses namespaced keys so both accounts can trade the same tickers.
+
+[[accounts]]
+name = "macd_pullback_paper"
+paper_trading = true
+api_key_env = "ALPACA_API_KEY"
+secret_key_env = "ALPACA_SECRET_KEY"
+state_namespace = ""
+
+[[accounts.symbols]]
 ticker = "AAPL"
 
-[symbols.strategy]
+[accounts.symbols.strategy]
 name = "macd_pullback"
 
-[[symbols]]
+[[accounts.symbols]]
 ticker = "AMD"
 
-[symbols.strategy]
+[accounts.symbols.strategy]
 name = "macd_pullback"
 
-[[symbols]]
+[[accounts.symbols]]
 ticker = "AMZN"
 
-[symbols.strategy]
+[accounts.symbols.strategy]
 name = "macd_pullback"
 
-[[symbols]]
+[[accounts.symbols]]
 ticker = "META"
 
-[symbols.strategy]
+[accounts.symbols.strategy]
 name = "macd_pullback"
 
-[[symbols]]
+[[accounts.symbols]]
 ticker = "SPY"
 
-[symbols.strategy]
+[accounts.symbols.strategy]
 name = "macd_pullback"
 
-[[symbols]]
+[[accounts.symbols]]
 ticker = "QQQ"
 
-[symbols.strategy]
+[accounts.symbols.strategy]
 name = "macd_pullback"
 
-[[symbols]]
+[[accounts.symbols]]
 ticker = "IWM"
 
-[symbols.strategy]
+[accounts.symbols.strategy]
 name = "macd_pullback"
 
-[[symbols]]
+[[accounts.symbols]]
 ticker = "ARKK"
 
-[symbols.strategy]
+[accounts.symbols.strategy]
 name = "macd_pullback"
 
+[[accounts.symbols]]
+ticker = "MSFT"
+
+[accounts.symbols.strategy]
+name = "macd_pullback"
+
+[[accounts.symbols]]
+ticker = "NVDA"
+
+[accounts.symbols.strategy]
+name = "macd_pullback"
+
+[[accounts]]
+name = "vwap_rsi_paper"
+paper_trading = true
+api_key_env = "PAPER2_ALPACA_API_KEY"
+secret_key_env = "PAPER2_ALPACA_SECRET_KEY"
+fallback_api_key_env = "OLD_ALPACA_API_KEY"
+fallback_secret_key_env = "OLD_ALPACA_SECRET_KEY"
+state_namespace = "vwap_rsi_paper"
+
+[[accounts.symbols]]
+ticker = "AAPL"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "AMD"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "AMZN"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "META"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "SPY"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "QQQ"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "IWM"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "ARKK"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "MSFT"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
+[[accounts.symbols]]
+ticker = "NVDA"
+
+[accounts.symbols.strategy]
+name = "vwap_rsi_mean_reversion"
+min_distance_from_vwap_frac = 0.003
+max_bars_in_trade = 15
+
 # Legacy ALB experiment kept for reference:
-# [[symbols]]
+# [[accounts.symbols]]
 # ticker = "ALB"
 #
-# [symbols.strategy]
+# [accounts.symbols.strategy]
 # name = "macd_pullback"
 # ema_band_window = 200
 # require_pullback_breakout = false
@@ -100,15 +217,3 @@ name = "macd_pullback"
 # macd_exit_slope_lookback = 1
 # macd_exit_min_slope_frac_of_price = 0.0005
 # macd_exit_requires_ema12_confirmation = true
-
-[[symbols]]
-ticker = "MSFT"
-
-[symbols.strategy]
-name = "macd_pullback"
-
-[[symbols]]
-ticker = "NVDA"
-
-[symbols.strategy]
-name = "macd_pullback"

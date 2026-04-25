@@ -2,7 +2,13 @@
 
 from typing import Optional
 
-from trading_bot.logging_utils import log_decision, log_strategy_context, make_event_id
+from trading_bot.logging_utils import (
+    is_notable_decision,
+    log_decision,
+    log_notable_strategy_context,
+    log_strategy_context,
+    make_event_id,
+)
 
 
 def serialize_value(value) -> str:
@@ -26,6 +32,7 @@ def build_strategy_metadata(strategy_name: str, strategy_version: str, interval:
 def build_decision_payload(
     *,
     bot_version: str,
+    account_name: str,
     symbol: str,
     strategy_metadata: dict,
     latest_close: float,
@@ -44,6 +51,7 @@ def build_decision_payload(
     """Build a flat, strategy-agnostic decision log row."""
     return {
         "bot_version": bot_version,
+        "account": account_name,
         "symbol": symbol,
         "strategy": strategy_metadata["name"],
         "strategy_version": strategy_metadata["version"],
@@ -67,6 +75,7 @@ def build_strategy_context_payload(
     *,
     decision_id: str,
     bot_version: str,
+    account_name: str,
     symbol: str,
     strategy_metadata: dict,
     action: str,
@@ -97,6 +106,7 @@ def build_strategy_context_payload(
     return {
         "decision_id": decision_id,
         "bot_version": bot_version,
+        "account_name": account_name,
         "symbol": symbol,
         "strategy": strategy_metadata["name"],
         "strategy_version": strategy_metadata["version"],
@@ -112,6 +122,7 @@ def build_strategy_context_payload(
             "entry_price": entry_price,
         },
         "account": {
+            "name": account_name,
             "buying_power": buying_power,
             "status": serialize_value(account_status),
         },
@@ -168,4 +179,6 @@ def log_decision_event(*, decision_row: dict, strategy_context_row: dict) -> str
     context["decision_id"] = decision_id
     log_decision(row)
     log_strategy_context(context)
+    if is_notable_decision(row["action"], row["reason"]):
+        log_notable_strategy_context(context)
     return decision_id

@@ -14,7 +14,7 @@ from trading_bot.broker import (
     get_working_orders,
     market_is_open,
 )
-from trading_bot.config import BotConfig, SymbolAssignment, load_config
+from trading_bot.config import AccountAssignment, BotConfig, SymbolAssignment, load_config
 from trading_bot.data import download_data
 from trading_bot.decision_logging import (
     build_decision_payload,
@@ -23,6 +23,7 @@ from trading_bot.decision_logging import (
     log_decision_event,
     serialize_value,
 )
+from trading_bot.logging_utils import configure_logging
 from trading_bot.execution import (
     handle_flatten_before_close,
     handle_exit_triggers,
@@ -109,15 +110,22 @@ def format_symbol_label(symbol: str, width: int) -> str:
     return f"{symbol:<{width}}"
 
 
+def build_state_symbol(state_namespace: str, symbol: str) -> str:
+    """Namespace local session state so accounts can trade the same ticker independently."""
+    return symbol if not state_namespace else f"{state_namespace}:{symbol}"
+
+
 def print_cycle_summary(results: list[dict]) -> None:
     """Print a compact multi-symbol summary after each full cycle."""
     if not results:
         return
 
+    account_width = max(len(str(result["account"])) for result in results)
     symbol_width = max(len(str(result["symbol"])) for result in results)
     print("\nCycle summary:")
     for result in results:
         print(
+            f"{format_symbol_label(str(result['account']), account_width)} | "
             f"{format_symbol_label(str(result['symbol']), symbol_width)} | {result['strategy']} | close={result['latest_close']} | "
             f"signal={result['signal']} | position={result['position']} | market={result['market']} | "
             f"decision={result['decision']}:{result['reason']} | stop={result['stop']}"
@@ -190,10 +198,14 @@ def evaluate_entry_safeguards(
     return None, metadata
 
 
-def print_preflight_report(trading_client, config: BotConfig, session_state: dict) -> None:
+def print_preflight_report(
+    trading_client,
+    account_config: AccountAssignment,
+    session_state: dict,
+) -> None:
     """Print a startup preflight summary before the live trading loop begins."""
-    print("\nPreflight:")
-    symbol_width = max(len(symbol_config.ticker) for symbol_config in config.symbols) if config.symbols else 1
+    print(f"\nPreflight: {account_config.name}")
+    symbol_width = max(len(symbol_config.ticker) for symbol_config in account_config.symbols) if account_config.symbols else 1
     all_working_orders = get_working_orders(trading_client)
 
     account = get_account(trading_client)
@@ -217,30 +229,41 @@ def print_preflight_report(trading_client, config: BotConfig, session_state: dic
             f"timestamp={serialize_value(getattr(market_clock, 'timestamp', ''))}"
         )
 
-    for symbol_config in config.symbols:
+    for symbol_config in account_config.symbols:
         symbol = symbol_config.ticker
+        state_symbol = build_state_symbol(account_config.state_namespace, symbol)
         strategy = symbol_config.strategy
         live_state = get_live_broker_state(trading_client, symbol, all_working_orders=all_working_orders)
         if live_state["is_flat"]:
-            clear_active_exit_levels(session_state, symbol)
+            clear_active_exit_levels(session_state, state_symbol)
         asset_flags = get_asset_flags(get_asset(trading_client, symbol))
         stop_summary = summarize_stop_state(
             live_state,
-            get_active_exit_levels(session_state, symbol),
+            get_active_exit_levels(session_state, state_symbol),
         )
+        position_label = "flat"
+        if not live_state["is_flat"]:
+            position_label = f"{live_state['position_side']} x{live_state['position_qty']}"
         print(
             f"{format_symbol_label(symbol, symbol_width)} | {strategy.name}@{strategy.version} | "
-            f"position={'flat' if live_state['is_flat'] else f'{live_state['position_side']} x{live_state['position_qty']}'} | "
+            f"position={position_label} | "
             f"tradable={asset_flags['tradable']} | shortable={asset_flags['shortable']} | "
             f"etb={asset_flags['easy_to_borrow']} | stop={stop_summary} | "
             f"working_orders={len(live_state['working_orders'])}"
         )
 
 
-def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, symbol_config: SymbolAssignment) -> dict:
+def run_symbol_cycle(
+    session_state: dict,
+    trading_client,
+    config: BotConfig,
+    account_config: AccountAssignment,
+    symbol_config: SymbolAssignment,
+) -> dict:
     """Run one full bot cycle for a single configured symbol."""
     # Get the current symbol and its assigned strategy from the config.
     symbol = symbol_config.ticker
+    state_symbol = build_state_symbol(account_config.state_namespace, symbol)
     strategy = symbol_config.strategy
     strategy_metadata = build_strategy_metadata(
         strategy.name,
@@ -248,6 +271,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         strategy.interval,
     )
     summary = {
+        "account": account_config.name,
         "symbol": symbol,
         "strategy": f"{strategy.name}@{strategy.version}",
         "latest_close": "?",
@@ -267,10 +291,18 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         return summary
 
     # Download recent market data needed to evaluate the strategy.
-    print(f"\n=== {symbol} | {strategy.name}@{strategy.version} ===")
+    print(f"\n=== {account_config.name} | {symbol} | {strategy.name}@{strategy.version} ===")
     print("Downloading market data from Alpaca...")
     try:
-        raw_df = download_data(symbol, strategy.interval, strategy.lookback_bars)
+        raw_df = download_data(
+            symbol,
+            strategy.interval,
+            strategy.lookback_bars,
+            api_key_env=account_config.api_key_env,
+            secret_key_env=account_config.secret_key_env,
+            fallback_api_key_env=account_config.fallback_api_key_env,
+            fallback_secret_key_env=account_config.fallback_secret_key_env,
+        )
     except ValueError as exc:
         print(exc)
         return finish("ERROR", "data_download_value_error")
@@ -341,7 +373,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
     position_qty = live_state["position_qty"]
     entry_price = live_state["entry_price"]
     if live_state["is_flat"]:
-        clear_active_exit_levels(session_state, symbol)
+        clear_active_exit_levels(session_state, state_symbol)
     active_exit_levels = None
     stop_reconciliation_status = None
     if position_side in {"long", "short"} and entry_price is not None:
@@ -351,11 +383,11 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             stop_loss_pct=config.risk.stop_loss_pct,
             take_profit_pct=config.risk.take_profit_pct,
             protective_stop_order=live_state["protective_stop_order"],
-            active_exit_levels=get_active_exit_levels(session_state, symbol),
+            active_exit_levels=get_active_exit_levels(session_state, state_symbol),
             risk_reward_multiple=strategy.risk_reward_multiple(),
         )
         if active_exit_levels is not None:
-            set_active_exit_levels(session_state, symbol, active_exit_levels)
+            set_active_exit_levels(session_state, state_symbol, active_exit_levels)
         stop_reconciliation_status = reconcile_missing_protective_stop(
             trading_client=trading_client,
             symbol=symbol,
@@ -375,11 +407,11 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                 stop_loss_pct=config.risk.stop_loss_pct,
                 take_profit_pct=config.risk.take_profit_pct,
                 protective_stop_order=live_state["protective_stop_order"],
-                active_exit_levels=get_active_exit_levels(session_state, symbol),
+                active_exit_levels=get_active_exit_levels(session_state, state_symbol),
                 risk_reward_multiple=strategy.risk_reward_multiple(),
             )
             if active_exit_levels is not None:
-                set_active_exit_levels(session_state, symbol, active_exit_levels)
+                set_active_exit_levels(session_state, state_symbol, active_exit_levels)
 
     position_context = build_live_position_context(df, live_state, active_exit_levels)
     strategy_entry_action = strategy.entry_action(latest)
@@ -410,6 +442,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
     def log_decision_for_cycle(action: str, reason: str, qty: int = 0, market_open=None) -> str:
         decision_row = build_decision_payload(
             bot_version=config.bot.version,
+            account_name=account_config.name,
             symbol=symbol,
             strategy_metadata=strategy_metadata,
             latest_close=latest_close,
@@ -428,6 +461,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         strategy_context_row = build_strategy_context_payload(
             decision_id="",
             bot_version=config.bot.version,
+            account_name=account_config.name,
             symbol=symbol,
             strategy_metadata=strategy_metadata,
             action=action,
@@ -509,10 +543,12 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
+        state_symbol=state_symbol,
         current_market_open=current_market_open,
         live_state=live_state,
         log_decision_event=log_decision_for_cycle,
         bot_version=config.bot.version,
+        account_name=account_config.name,
         strategy_name=strategy.name,
         strategy_version=strategy.version,
         stop_loss_pct=config.risk.stop_loss_pct,
@@ -529,11 +565,13 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
             trading_client=trading_client,
             session_state=session_state,
             symbol=symbol,
+            state_symbol=state_symbol,
             latest_close=latest_close,
             event_key=latest_event_key,
             live_state=live_state,
             log_decision_event=log_decision_for_cycle,
             bot_version=config.bot.version,
+            account_name=account_config.name,
             strategy_name=strategy.name,
             strategy_version=strategy.version,
             order_status_poll_seconds=config.execution.order_status_poll_seconds,
@@ -611,6 +649,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                 trading_client=trading_client,
                 session_state=session_state,
                 symbol=symbol,
+                state_symbol=state_symbol,
                 action="BUY",
                 qty=qty,
                 event_key=latest_event_key,
@@ -620,6 +659,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                 position_side_before=position_side,
                 position_side_after=resulting_side,
                 bot_version=config.bot.version,
+                account_name=account_config.name,
                 strategy_name=strategy.name,
                 strategy_version=strategy.version,
                 order_status_poll_seconds=config.execution.order_status_poll_seconds,
@@ -688,6 +728,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                 trading_client=trading_client,
                 session_state=session_state,
                 symbol=symbol,
+                state_symbol=state_symbol,
                 action="SELL",
                 qty=qty,
                 event_key=latest_event_key,
@@ -697,6 +738,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
                 position_side_before=position_side,
                 position_side_after=resulting_side,
                 bot_version=config.bot.version,
+                account_name=account_config.name,
                 strategy_name=strategy.name,
                 strategy_version=strategy.version,
                 order_status_poll_seconds=config.execution.order_status_poll_seconds,
@@ -726,6 +768,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
+        state_symbol=state_symbol,
         latest_close=latest_close,
         event_key=latest_event_key,
         live_state=live_state,
@@ -734,6 +777,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         risk_settings=config.risk,
         log_decision_event=log_decision_for_cycle,
         bot_version=config.bot.version,
+        account_name=account_config.name,
         strategy_exit_reason=strategy_exit_reason,
         position_context=position_context,
         strategy_name=strategy.name,
@@ -763,6 +807,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
+        state_symbol=state_symbol,
         latest_close=latest_close,
         event_key=latest_event_key,
         buying_power=buying_power,
@@ -777,6 +822,7 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
         risk_settings=config.risk,
         log_decision_event=log_decision_for_cycle,
         bot_version=config.bot.version,
+        account_name=account_config.name,
         strategy_name=strategy.name,
         strategy_version=strategy.version,
         order_status_poll_seconds=config.execution.order_status_poll_seconds,
@@ -794,29 +840,33 @@ def run_symbol_cycle(session_state: dict, trading_client, config: BotConfig, sym
     return finish("HOLD", "no_trade")
 
 
-def run_cycle(session_state: dict, trading_client, config: BotConfig) -> list[dict]:
-    """Run one full bot cycle for every configured symbol."""
-    # Run one symbol cycle for each configured ticker.
+def run_cycle(session_state: dict, account_clients: list[tuple[AccountAssignment, object]], config: BotConfig) -> list[dict]:
+    """Run one full bot cycle for every configured account and symbol."""
     results = []
-    for symbol_config in config.symbols:
-        try:
-            results.append(run_symbol_cycle(session_state, trading_client, config, symbol_config))
-        except Exception as exc:
-            print(f"\n=== {symbol_config.ticker} | {symbol_config.strategy.name}@{symbol_config.strategy.version} ===")
-            print(f"Unhandled symbol-cycle error: {exc}")
-            results.append(
-                {
-                    "symbol": symbol_config.ticker,
-                    "strategy": f"{symbol_config.strategy.name}@{symbol_config.strategy.version}",
-                    "latest_close": "?",
-                    "signal": "?",
-                    "position": "unknown",
-                    "market": "unknown",
-                    "decision": "ERROR",
-                    "reason": "symbol_cycle_exception",
-                    "stop": "unknown",
-                }
-            )
+    for account_config, trading_client in account_clients:
+        for symbol_config in account_config.symbols:
+            try:
+                results.append(run_symbol_cycle(session_state, trading_client, config, account_config, symbol_config))
+            except Exception as exc:
+                print(
+                    f"\n=== {account_config.name} | {symbol_config.ticker} | "
+                    f"{symbol_config.strategy.name}@{symbol_config.strategy.version} ==="
+                )
+                print(f"Unhandled symbol-cycle error: {exc}")
+                results.append(
+                    {
+                        "account": account_config.name,
+                        "symbol": symbol_config.ticker,
+                        "strategy": f"{symbol_config.strategy.name}@{symbol_config.strategy.version}",
+                        "latest_close": "?",
+                        "signal": "?",
+                        "position": "unknown",
+                        "market": "unknown",
+                        "decision": "ERROR",
+                        "reason": "symbol_cycle_exception",
+                        "stop": "unknown",
+                    }
+                )
     print_cycle_summary(results)
     return results
 
@@ -824,16 +874,33 @@ def run_cycle(session_state: dict, trading_client, config: BotConfig) -> list[di
 def run() -> None:
     """Run the bot once or keep polling until the user stops it."""
     config = load_config()
+    configure_logging(
+        enable_full_decision_log=config.logging.enable_full_decision_log,
+        enable_full_strategy_context_log=config.logging.enable_full_strategy_context_log,
+        enable_notable_decision_log=config.logging.enable_notable_decision_log,
+        enable_notable_strategy_context_log=config.logging.enable_notable_strategy_context_log,
+    )
     session_state = load_session_state()
 
-    # Connect to Alpaca using the configured trading mode.
-    try:
-        trading_client = connect_alpaca(paper=config.bot.paper_trading)
-    except ValueError as exc:
-        print(exc)
-        return
+    account_clients = []
+    for account_config in config.accounts:
+        try:
+            trading_client = connect_alpaca(
+                paper=account_config.paper_trading,
+                api_key_env=account_config.api_key_env,
+                secret_key_env=account_config.secret_key_env,
+                fallback_api_key_env=account_config.fallback_api_key_env,
+                fallback_secret_key_env=account_config.fallback_secret_key_env,
+            )
+        except ValueError as exc:
+            print(f"Skipping account {account_config.name}: {exc}")
+            continue
+        account_clients.append((account_config, trading_client))
+        print_preflight_report(trading_client, account_config, session_state)
 
-    print_preflight_report(trading_client, config, session_state)
+    if not account_clients:
+        print("No configured accounts could connect. Exiting.")
+        return
 
     if config.bot.preflight_only:
         print("Preflight-only mode is enabled. Exiting without running a trading cycle.")
@@ -841,7 +908,7 @@ def run() -> None:
 
     # In single-run mode, execute one cycle and exit.
     if not config.bot.run_continuously:
-        run_cycle(session_state, trading_client, config)
+        run_cycle(session_state, account_clients, config)
         return
 
     print(f"Starting continuous mode. Polling every {config.bot.poll_interval_seconds} seconds.")
@@ -850,7 +917,7 @@ def run() -> None:
     # In continuous mode, keep running the bot and wait between polling cycles.
     try:
         while True:
-            run_cycle(session_state, trading_client, config)
+            run_cycle(session_state, account_clients, config)
             print(f"Sleeping for {config.bot.poll_interval_seconds} seconds...")
             time.sleep(config.bot.poll_interval_seconds)
     except KeyboardInterrupt:  # Stop the bot gracefully when the user presses Ctrl+C.

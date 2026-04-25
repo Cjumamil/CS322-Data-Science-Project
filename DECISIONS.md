@@ -294,3 +294,31 @@ Focus on capturing decision and intent.
 **Decision:** Add `vwap_rsi_mean_reversion` as a new pluggable strategy alongside `macd_pullback`, with full backtest and paper-trading compatibility, but keep it in research mode rather than promoting it into the live paper-trading config yet. The implementation uses intraday VWAP as the mean, RSI as the stretch signal, a light stabilization/reversal confirmation, a recent-extreme stop model, and an explicit VWAP-targeted take-profit path.  
 **Reasoning:** The project already had a trend-following pullback strategy, but it did not yet have a clearly distinct mean-reversion strategy to compare across different market conditions. Adding a dedicated VWAP + RSI path creates a cleaner research contrast than continuing to bend `macd_pullback` into mixed behavior. A small shared-risk enhancement was also made so strategies can supply an explicit take-profit target price, which fits a VWAP-reversion exit better than forcing everything into percent-based or risk-multiple targets. Initial backtests supported keeping the strategy as a real first-class research path, especially because it behaved materially differently from `macd_pullback`, but the first-pass results were mixed enough across symbols that it should remain experimental until more tuning and review are completed.  
 **Approved by:** Joshua  
+
+## D-039
+**Date:** 2026-04-23  
+**Topic:** Separate Paper-Account Comparison Architecture  
+**Decision:** Move the live paper-trading config from a single shared Alpaca paper account to two explicit account blocks in `bot_config.toml`: `macd_pullback_paper` for the baseline and `vwap_rsi_paper` for the VWAP/RSI comparison path. Keep the runtime sequential across accounts and symbols, keep shared logs as the canonical logging surface, add account labels to those logs, and backfill historical single-account records as `macd_pullback_paper`. Preserve legacy session-state continuity for the MACD account by leaving its `state_namespace` blank, while namespacing the VWAP account so both accounts can trade the same tickers independently.  
+**Reasoning:** Comparing two live strategies inside one paper account would mix buying power, positions, and log interpretation in ways that make results harder to trust. Separate paper accounts provide cleaner runtime isolation for strategy comparison without requiring two different codebases. Keeping one shared set of logs with explicit account labels preserves the easiest analysis workflow because both strategies can still be filtered and compared in one table. Backfilling old rows to the MACD account keeps historical analysis coherent after the schema change instead of leaving blank account values that would become ambiguous later.  
+**Approved by:** Joshua  
+
+## D-040
+**Date:** 2026-04-24  
+**Topic:** Curated Shared Backtest Publishing Layer  
+**Decision:** Publish a small curated evidence set under `shared_backtests/` for report-writing, dashboard design, and teammate/AI handoff use. Keep `backtests/` as ignored local scratch space, but copy the specific runs and summaries that support key findings into `shared_backtests/`. Add `shared_backtests/INDEX.md` as the human guide and `shared_backtests/manifest.csv` as an AI-friendly artifact manifest. Include compact short-named sweep summaries and comparison CSVs for the most important experiments instead of committing every nested exploratory sweep folder.  
+**Reasoning:** The team had meaningful research conclusions in `RESEARCH_LOG.md`, but teammates no longer had reliable access to the current backtest artifacts because the main `backtests/` workspace is intentionally ignored. That made report support weaker and left the dashboard work at risk of using stale runs. A curated publishing layer keeps the repository clean while still preserving the evidence behind the decisions that mattered. It also creates one clear source of truth for collaborators by separating report-worthy artifacts, dashboard-ready canonical datasets, and large exploratory scratch work. Using short published sweep summary filenames also avoids Windows/Git path-length friction that appeared when copying full nested sweep folders directly into the shared area.  
+**Approved by:** Joshua  
+
+## D-041
+**Date:** 2026-04-24  
+**Topic:** Compact Notable Decision Logging  
+**Decision:** Add a compact logging layer for non-routine bot activity: `notable_decision_log.csv` records every decision except the routine `HOLD` / `no_trade` rows, and `notable_strategy_context_log.jsonl` records the matching non-routine strategy-context payloads. Keep the full `decision_log.csv` and `strategy_context_log.jsonl` as local audit trails, and switch the CSV logging helpers to true append behavior so log writes no longer rewrite the entire file on every new row.  
+**Reasoning:** The project's operational logs are growing quickly, and the full decision/context logs are dominated by repetitive polling rows that are not useful for most teammate analysis, dashboard work, or Git-friendly sharing. A compact notable-event layer preserves the meaningful strategy actions, skips, and safety blocks without losing the full audit record when deeper debugging is needed. Moving the CSV helpers to append mode also makes ongoing logging more scalable as these files grow.  
+**Approved by:** Joshua  
+
+## D-042
+**Date:** 2026-04-24  
+**Topic:** Configurable Verbose Log Retention  
+**Decision:** Add a `[logging]` section to `bot_config.toml` so the runtime can independently enable or disable the full `decision_log.csv`, full `strategy_context_log.jsonl`, compact `notable_decision_log.csv`, and compact `notable_strategy_context_log.jsonl` without changing code. Leave all four enabled by default while the bot is still under active development.  
+**Reasoning:** The team still benefits from verbose audit logs during strategy iteration and debugging, but the long-term plan is to rely more heavily on the compact notable-event logs once the bot stabilizes. Exposing log-retention choices in config keeps the current development defaults intact while creating a clean path to reduce noise and file growth later. This also avoids turning log retention into a code-edit decision every time the workflow changes.  
+**Approved by:** Joshua  

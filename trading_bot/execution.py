@@ -59,6 +59,7 @@ def build_trade_payload(
     order,
     decision_id: str,
     bot_version: str,
+    account_name: str,
     symbol: str,
     strategy_name: str,
     strategy_version: str,
@@ -74,6 +75,7 @@ def build_trade_payload(
     return {
         "decision_id": decision_id,
         "bot_version": bot_version,
+        "account": account_name,
         "symbol": serialize_value(getattr(order, "symbol", symbol)),
         "strategy": strategy_name,
         "strategy_version": strategy_version,
@@ -234,8 +236,10 @@ def finalize_order_logging(
     trading_client,
     session_state: dict,
     symbol: str,
+    state_symbol: str | None,
     order,
     bot_version: str,
+    account_name: str,
     strategy_name: str,
     strategy_version: str,
     stop_loss_pct: float,
@@ -244,13 +248,15 @@ def finalize_order_logging(
     serialize_value,
 ) -> None:
     """Log the final order state once Alpaca finishes processing the order."""
-    symbol_state = get_symbol_session_state(session_state, symbol)
+    session_symbol = state_symbol or symbol
+    symbol_state = get_symbol_session_state(session_state, session_symbol)
     status = get_order_status(order)
     log_trade(
         build_trade_payload(
             order=order,
             decision_id=symbol_state["pending_decision_id"],
             bot_version=bot_version,
+            account_name=account_name,
             symbol=symbol,
             strategy_name=strategy_name,
             strategy_version=strategy_version,
@@ -281,7 +287,7 @@ def finalize_order_logging(
             )
             if exit_levels is not None:
                 exit_levels["entry_signal_time"] = symbol_state["pending_signal_time"]
-        set_active_exit_levels(session_state, symbol, exit_levels)
+        set_active_exit_levels(session_state, session_symbol, exit_levels)
         place_protective_stop_after_entry(
             trading_client=trading_client,
             symbol=symbol,
@@ -291,9 +297,9 @@ def finalize_order_logging(
             enable_broker_side_stop_loss=enable_broker_side_stop_loss,
         )
     elif symbol_state["pending_position_side_after"] == "flat" and status == "filled":
-        clear_active_exit_levels(session_state, symbol)
+        clear_active_exit_levels(session_state, session_symbol)
 
-    clear_pending_order(session_state, symbol)
+    clear_pending_order(session_state, session_symbol)
 
 
 def submit_and_track_order(
@@ -310,6 +316,7 @@ def submit_and_track_order(
     position_side_before: str,
     position_side_after: str,
     bot_version: str,
+    account_name: str,
     strategy_name: str,
     strategy_version: str,
     order_status_poll_seconds: int,
@@ -318,16 +325,18 @@ def submit_and_track_order(
     take_profit_pct: float,
     enable_broker_side_stop_loss: bool,
     serialize_value,
+    state_symbol: str | None = None,
     entry_risk_plan: dict | None = None,
     signal_time: str | None = None,
 ) -> None:
     """Submit an order, then poll briefly so trade logs reflect final fill data when possible."""
+    session_symbol = state_symbol or symbol
     order = submit_market_order(trading_client, symbol, action_to_order_side(action), qty)
     print(f"Submitted {action} market order for {symbol}: qty={qty}")
 
     record_submitted_action(
         session_state,
-        symbol,
+        session_symbol,
         action,
         event_key,
         order_id=str(getattr(order, "id")),
@@ -354,8 +363,10 @@ def submit_and_track_order(
             trading_client=trading_client,
             session_state=session_state,
             symbol=symbol,
+            state_symbol=session_symbol,
             order=final_order,
             bot_version=bot_version,
+            account_name=account_name,
             strategy_name=strategy_name,
             strategy_version=strategy_version,
             stop_loss_pct=stop_loss_pct,
@@ -376,15 +387,18 @@ def handle_pending_order_state(
     live_state: dict,
     log_decision_event,
     bot_version: str,
+    account_name: str,
     strategy_name: str,
     strategy_version: str,
     stop_loss_pct: float,
     take_profit_pct: float,
     enable_broker_side_stop_loss: bool,
     serialize_value,
+    state_symbol: str | None = None,
 ) -> tuple[str, str] | None:
     """Handle unresolved broker orders before looking at fresh signals."""
-    pending_result, pending_order = refresh_pending_order(trading_client, session_state, symbol, live_state)
+    session_symbol = state_symbol or symbol
+    pending_result, pending_order = refresh_pending_order(trading_client, session_state, session_symbol, live_state)
     if pending_result == "pending":
         print("Existing order is still pending. New trade decisions are paused.")
         log_decision_event("HOLD", "pending_order_not_final", market_open=current_market_open)
@@ -394,8 +408,10 @@ def handle_pending_order_state(
             trading_client=trading_client,
             session_state=session_state,
             symbol=symbol,
+            state_symbol=session_symbol,
             order=pending_order,
             bot_version=bot_version,
+            account_name=account_name,
             strategy_name=strategy_name,
             strategy_version=strategy_version,
             stop_loss_pct=stop_loss_pct,
@@ -428,6 +444,7 @@ def handle_flatten_before_close(
     live_state: dict,
     log_decision_event,
     bot_version: str,
+    account_name: str,
     strategy_name: str,
     strategy_version: str,
     order_status_poll_seconds: int,
@@ -436,8 +453,10 @@ def handle_flatten_before_close(
     take_profit_pct: float,
     enable_broker_side_stop_loss: bool,
     serialize_value,
+    state_symbol: str | None = None,
 ) -> tuple[str, str] | None:
     """Flatten any live position before the configured market close cutoff."""
+    session_symbol = state_symbol or symbol
     position_side = live_state["position_side"]
     if position_side == "flat":
         log_decision_event("HOLD", "flatten_window_no_new_entries", market_open=True)
@@ -448,7 +467,7 @@ def handle_flatten_before_close(
     if action is None or qty <= 0:
         return False
 
-    if should_prevent_duplicate_trade(session_state, symbol, action, event_key):
+    if should_prevent_duplicate_trade(session_state, session_symbol, action, event_key):
         print(f"Duplicate {action} prevented for the current strategy event.")
         log_decision_event("HOLD", f"duplicate_{action.lower()}_prevented", qty=qty, market_open=True)
         return "HOLD", f"duplicate_{action.lower()}_prevented"
@@ -459,6 +478,7 @@ def handle_flatten_before_close(
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
+        state_symbol=session_symbol,
         action=action,
         qty=qty,
         event_key=event_key,
@@ -468,6 +488,7 @@ def handle_flatten_before_close(
         position_side_before=position_side,
         position_side_after="flat",
         bot_version=bot_version,
+        account_name=account_name,
         strategy_name=strategy_name,
         strategy_version=strategy_version,
         order_status_poll_seconds=order_status_poll_seconds,
@@ -493,6 +514,7 @@ def handle_exit_triggers(
     risk_settings,
     log_decision_event,
     bot_version: str,
+    account_name: str,
     strategy_exit_reason: str,
     position_context,
     strategy_name: str,
@@ -501,8 +523,10 @@ def handle_exit_triggers(
     order_status_timeout_seconds: int,
     enable_broker_side_stop_loss: bool,
     serialize_value,
+    state_symbol: str | None = None,
 ) -> tuple[str, str] | None:
     """Handle position exits using live broker state for size and basis."""
+    session_symbol = state_symbol or symbol
     position_side = live_state["position_side"]
     if position_side == "flat":
         return None
@@ -515,7 +539,7 @@ def handle_exit_triggers(
         stop_loss_pct=risk_settings.stop_loss_pct,
         take_profit_pct=risk_settings.take_profit_pct,
         protective_stop_order=live_state["protective_stop_order"],
-        active_exit_levels=get_active_exit_levels(session_state, symbol),
+        active_exit_levels=get_active_exit_levels(session_state, session_symbol),
         risk_reward_multiple=strategy.risk_reward_multiple(),
     )
     if exit_levels is None:
@@ -535,7 +559,7 @@ def handle_exit_triggers(
     if action is None:
         return None
 
-    if should_prevent_duplicate_trade(session_state, symbol, action, event_key):
+    if should_prevent_duplicate_trade(session_state, session_symbol, action, event_key):
         print(f"Duplicate {action} prevented for the current strategy event.")
         log_decision_event("HOLD", f"duplicate_{action.lower()}_prevented", qty=qty, market_open=True)
         return "HOLD", f"duplicate_{action.lower()}_prevented"
@@ -546,6 +570,7 @@ def handle_exit_triggers(
         trading_client=trading_client,
         session_state=session_state,
         symbol=symbol,
+        state_symbol=session_symbol,
         action=action,
         qty=qty,
         event_key=event_key,
@@ -555,6 +580,7 @@ def handle_exit_triggers(
         position_side_before=position_side,
         position_side_after="flat",
         bot_version=bot_version,
+        account_name=account_name,
         strategy_name=strategy_name,
         strategy_version=strategy_version,
         order_status_poll_seconds=order_status_poll_seconds,
@@ -586,15 +612,18 @@ def handle_strategy_actions(
     risk_settings,
     log_decision_event,
     bot_version: str,
+    account_name: str,
     strategy_name: str,
     strategy_version: str,
     order_status_poll_seconds: int,
     order_status_timeout_seconds: int,
     enable_broker_side_stop_loss: bool,
     serialize_value,
+    state_symbol: str | None = None,
     signal_time: str | None = None,
 ) -> tuple[str, str] | None:
     """Handle direction-aware strategy entries and exits for the active strategy."""
+    session_symbol = state_symbol or symbol
     position_side = live_state["position_side"]
     qty = live_state["position_qty"]
 
@@ -607,7 +636,7 @@ def handle_strategy_actions(
             log_decision_event("HOLD", "stale_protective_stop_exists", market_open=True)
             return "HOLD", "stale_protective_stop_exists"
 
-        if should_prevent_duplicate_trade(session_state, symbol, strategy_entry_action, event_key):
+        if should_prevent_duplicate_trade(session_state, session_symbol, strategy_entry_action, event_key):
             print(f"Duplicate {strategy_entry_action} prevented for the current strategy event.")
             log_decision_event(
                 "HOLD",
@@ -644,6 +673,7 @@ def handle_strategy_actions(
             trading_client=trading_client,
             session_state=session_state,
             symbol=symbol,
+            state_symbol=session_symbol,
             action=strategy_entry_action,
             qty=entry_qty,
             event_key=event_key,
@@ -653,6 +683,7 @@ def handle_strategy_actions(
             position_side_before="flat",
             position_side_after=resulting_side,
             bot_version=bot_version,
+            account_name=account_name,
             strategy_name=strategy_name,
             strategy_version=strategy_version,
             order_status_poll_seconds=order_status_poll_seconds,
@@ -667,7 +698,7 @@ def handle_strategy_actions(
         return strategy_entry_action, strategy_entry_reason
 
     if position_side == "long" and strategy_exit_action == "SELL":
-        if should_prevent_duplicate_trade(session_state, symbol, "SELL", event_key):
+        if should_prevent_duplicate_trade(session_state, session_symbol, "SELL", event_key):
             print("Duplicate SELL prevented for the current strategy event.")
             log_decision_event("HOLD", "duplicate_sell_prevented", market_open=True)
             return "HOLD", "duplicate_sell_prevented"
@@ -678,6 +709,7 @@ def handle_strategy_actions(
             trading_client=trading_client,
             session_state=session_state,
             symbol=symbol,
+            state_symbol=session_symbol,
             action="SELL",
             qty=qty,
             event_key=event_key,
@@ -687,6 +719,7 @@ def handle_strategy_actions(
             position_side_before="long",
             position_side_after="flat",
             bot_version=bot_version,
+            account_name=account_name,
             strategy_name=strategy_name,
             strategy_version=strategy_version,
             order_status_poll_seconds=order_status_poll_seconds,
@@ -699,7 +732,7 @@ def handle_strategy_actions(
         return "SELL", strategy_exit_reason
 
     if position_side == "short" and strategy_exit_action == "BUY":
-        if should_prevent_duplicate_trade(session_state, symbol, "BUY", event_key):
+        if should_prevent_duplicate_trade(session_state, session_symbol, "BUY", event_key):
             print("Duplicate BUY prevented for the current strategy event.")
             log_decision_event("HOLD", "duplicate_buy_prevented", market_open=True)
             return "HOLD", "duplicate_buy_prevented"
@@ -710,6 +743,7 @@ def handle_strategy_actions(
             trading_client=trading_client,
             session_state=session_state,
             symbol=symbol,
+            state_symbol=session_symbol,
             action="BUY",
             qty=qty,
             event_key=event_key,
@@ -719,6 +753,7 @@ def handle_strategy_actions(
             position_side_before="short",
             position_side_after="flat",
             bot_version=bot_version,
+            account_name=account_name,
             strategy_name=strategy_name,
             strategy_version=strategy_version,
             order_status_poll_seconds=order_status_poll_seconds,
