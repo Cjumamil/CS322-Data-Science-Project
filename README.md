@@ -66,11 +66,30 @@ shared_backtests/         # Team-shared backtest runs intended for Git commits
 
 ### Setup Instructions
 
-#### 1. Install dependencies
+#### 1. Use a supported Python and install dependencies
+
+This repo currently expects a modern Python with `tomllib` support, such as Python 3.11+.
+
+The project-specific launcher scripts are pinned to:
+
+```text
+C:\ProgramData\anaconda3\python.exe
+```
+
+If your shell or editor is not already using that interpreter, prefer the repo-local launchers:
+
+```powershell
+.\run_backtest.ps1 --symbol MSFT --strategy macd_pullback --start 2025-01-01 --end 2025-03-31
+.\run_bot.ps1
+```
+
+For a fresh environment that is not relying on the repo's bundled/vendor package paths, install:
 
 ```bash
-pip install alpaca-py python-dotenv pandas matplotlib
+pip install alpaca-py python-dotenv pandas numpy matplotlib xgboost
 ```
+
+The package also exposes vendored dependencies from `.vendor_bundle/` automatically when available, and the pooled XGBoost trainer can additionally load a repo-local XGBoost package from `workspace_pkgs/xgboost_local/` if present.
 
 #### 2. Create a `.env` file in the project root
 
@@ -202,10 +221,16 @@ To save a run under the team-shared folder intended for Git commits, add `--shar
 python -m trading_bot.backtest --symbol MSFT --strategy macd_pullback --start 2025-01-01 --end 2025-03-31 --shared
 ```
 
-For the pooled XGBoost research workflow, use the separate training entry point. It trains one shared artifact across the active symbol set, selects a threshold on a validation window, and writes a report plus per-symbol comparison CSV:
+For the pooled XGBoost research workflow, use the separate training entry point. It trains one shared artifact across the chosen symbol set, selects a threshold on a validation window, and writes a report plus per-symbol comparison CSV.
+
+Important note for the current repo state:
+
+* the live bot config is currently account-based via `[[accounts]]`
+* the trainer's default symbol auto-discovery still expects the older top-level `[[symbols]]` layout
+* with the current `bot_config.toml`, pass `--symbols` explicitly
 
 ```bash
-python -m trading_bot.train_xgboost_filter --train-start 2023-01-03 --train-end 2024-12-31 --validation-start 2025-01-01 --validation-end 2025-09-30 --test-start 2025-10-01 --test-end 2026-04-21
+python -m trading_bot.train_xgboost_filter --symbols AAPL,AMD,AMZN,META,SPY,QQQ,IWM,ARKK,MSFT,NVDA --train-start 2023-01-03 --train-end 2024-12-31 --validation-start 2025-01-01 --validation-end 2025-09-30 --test-start 2025-10-01 --test-end 2026-04-21
 ```
 
 Example run folder name:
@@ -229,15 +254,20 @@ Example run folder name:
 
 ### Logs
 
-The bot writes five main logs in the project root:
+The bot now keeps four main runtime logs in the project root:
 
-* `decision_log.csv` - full stable decision log, including frequent `HOLD` / `no_trade` rows
-* `notable_decision_log.csv` - compact decision log that records everything except `HOLD` with reason `no_trade`
+* `notable_decision_log.csv` - compact decision log for real non-`HOLD` actions only
+* `notable_strategy_context_log.jsonl` - matching strategy-context rows for the same non-`HOLD` action set
 * `trade_log.csv` - execution/fill log with order lifecycle details, including the account label
-* `strategy_context_log.jsonl` - full flexible strategy-specific context for each decision, including account metadata
-* `notable_strategy_context_log.jsonl` - compact strategy-context log that records everything except `HOLD` with reason `no_trade`
+* `blocker_incident_log.jsonl` - append-only lifecycle log for policy holds and diagnosable blockers, using `opened`, `heartbeat`, and `resolved` events instead of per-cycle spam
 
-The current `bot_config.toml` also exposes a `[logging]` section so the full logs can stay enabled during development, then be disabled later without code changes if routine polling rows start creating too much noise or file growth.
+The full per-cycle `decision_log.csv` and `strategy_context_log.jsonl` are now disabled by default because they grew too quickly and were dominated by routine polling rows. Historical copies can be archived under `archive/local_only/`, which is a gitignored area for large local-only artifacts.
+
+The current `bot_config.toml` still exposes a `[logging]` section so the retired full logs can be re-enabled later if a deeper local audit trail is needed.
+
+Other persisted local files include:
+
+* `blocker_incident_state.json` - small gitignored runtime state file used to remember which incidents are currently open so lifecycle events can be deduplicated cleanly across cycles and restarts
 * `live_session_state.json` - persisted lightweight live trade context used to make restarts safer
 * `backtests/<timestamped-run-folder>/` - local offline backtest trade logs, summaries, and charts for one run
 * `shared_backtests/<timestamped-run-folder>/` - team-shared offline backtest runs intended for Git commits
@@ -249,7 +279,7 @@ Each run can also contain a `trade_charts/` folder with one zoomed candlestick c
 * strategy-aware overlays such as `EMA12`, `EMA26`, `EMA200` high/close/low bands, or `VWAP`
 * a strategy-aware indicator panel such as MACD or RSI under the price chart when available
 
-`decision_id` links the decision log, trade log, and strategy context entries together.
+`decision_id` links the notable decision log, trade log, and notable strategy-context entries together for real trade actions.
 
 Historical single-account log rows were backfilled to `macd_pullback_paper` when the repo moved to the separate-account layout, so older records remain analyzable without ambiguous blank account labels.
 

@@ -27,10 +27,10 @@ flatten_minutes_before_close = 5
 max_total_position_fraction_of_buying_power = 0.08 # Block new entries when total deployed exposure would exceed this fraction of buying power.
 
 [logging]
-enable_full_decision_log = true # Keep the full per-cycle decision log; turn off later when routine polling rows become too noisy.
-enable_full_strategy_context_log = true # Keep the full JSONL context log for debugging while the bot is still evolving.
-enable_notable_decision_log = true # Keep the compact decision log that excludes HOLD/no_trade rows.
-enable_notable_strategy_context_log = true # Keep the compact context log that excludes HOLD/no_trade rows.
+enable_full_decision_log = false # Disabled now that the full per-cycle log is too noisy and the historical copy has been archived locally.
+enable_full_strategy_context_log = false # Disabled now that the full per-cycle context log is too noisy and the historical copy has been archived locally.
+enable_notable_decision_log = true # Keep the compact decision log for real non-HOLD actions.
+enable_notable_strategy_context_log = true # Keep the compact strategy-context log for the same non-HOLD action set.
 
 # One `[[accounts]]` block per paper account. Each account has its own
 # Alpaca credential environment variable names and its own `[[accounts.symbols]]`

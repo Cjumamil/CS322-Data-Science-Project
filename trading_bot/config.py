@@ -40,8 +40,8 @@ class RiskSettings:
 
 @dataclass(frozen=True)
 class LoggingSettings:
-    enable_full_decision_log: bool = True
-    enable_full_strategy_context_log: bool = True
+    enable_full_decision_log: bool = False
+    enable_full_strategy_context_log: bool = False
     enable_notable_decision_log: bool = True
     enable_notable_strategy_context_log: bool = True
 

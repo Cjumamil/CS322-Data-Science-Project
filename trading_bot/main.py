@@ -23,6 +23,7 @@ from trading_bot.decision_logging import (
     log_decision_event,
     serialize_value,
 )
+from trading_bot.incident_logging import sync_incident_state
 from trading_bot.logging_utils import configure_logging
 from trading_bot.execution import (
     handle_flatten_before_close,
@@ -282,11 +283,38 @@ def run_symbol_cycle(
         "reason": "",
         "stop": "unknown",
     }
+    incident_context = {
+        "account_name": account_config.name,
+        "symbol": symbol,
+        "latest_close": None,
+        "signal": None,
+        "market_is_open": None,
+        "buying_power": None,
+        "position_side": "unknown",
+        "position_qty": 0,
+        "entry_price": None,
+        "stop_summary": "unknown",
+        "asset_flags": None,
+        "current_exposure_value": None,
+        "current_exposure_fraction": None,
+        "projected_exposure_fraction": None,
+    }
 
     def finish(action: str, reason: str, **updates) -> dict:
         summary.update(updates)
         summary["decision"] = action
         summary["reason"] = reason
+        sync_incident_state(
+            account_name=account_config.name,
+            symbol=symbol,
+            action=action,
+            reason=reason,
+            bot_version=config.bot.version,
+            strategy_name=strategy.name,
+            strategy_version=strategy.version,
+            interval=strategy.interval,
+            context=incident_context,
+        )
         print(f"Decision: {action} | reason={reason}")
         return summary
 
@@ -345,6 +373,8 @@ def run_symbol_cycle(
     latest_signal_value = strategy.latest_signal_value(latest)
     summary["latest_close"] = f"{latest_close:.2f}"
     summary["signal"] = str(latest_signal_value)
+    incident_context["latest_close"] = latest_close
+    incident_context["signal"] = serialize_value(latest_signal_value)
 
     # Get the account so position sizing can use live buying power.
     account = get_account(trading_client)
@@ -353,6 +383,7 @@ def run_symbol_cycle(
         return finish("ERROR", "account_lookup_failed")
 
     buying_power = float(account.buying_power)
+    incident_context["buying_power"] = buying_power
     exposure_metadata = {
         "asset_flags": {
             "tradable": False,
@@ -372,6 +403,9 @@ def run_symbol_cycle(
     position_side = live_state["position_side"]
     position_qty = live_state["position_qty"]
     entry_price = live_state["entry_price"]
+    incident_context["position_side"] = position_side
+    incident_context["position_qty"] = position_qty
+    incident_context["entry_price"] = entry_price
     if live_state["is_flat"]:
         clear_active_exit_levels(session_state, state_symbol)
     active_exit_levels = None
@@ -429,6 +463,8 @@ def run_symbol_cycle(
     summary["position"] = "flat" if not in_position else f"{position_side} x{position_qty}"
     summary["market"] = "open" if current_market_open else "closed"
     summary["stop"] = summarize_stop_state(live_state, active_exit_levels, stop_reconciliation_status)
+    incident_context["market_is_open"] = current_market_open
+    incident_context["stop_summary"] = summary["stop"]
     print(
         "Snapshot: "
         f"close={latest_close:.2f} | signal={latest_signal_value} | position={summary['position']} | "
@@ -528,6 +564,10 @@ def run_symbol_cycle(
         if block_reason is None:
             return None
 
+        incident_context["asset_flags"] = exposure_metadata["asset_flags"]
+        incident_context["current_exposure_value"] = exposure_metadata["current_exposure_value"]
+        incident_context["current_exposure_fraction"] = exposure_metadata["current_exposure_fraction"]
+        incident_context["projected_exposure_fraction"] = exposure_metadata["projected_exposure_fraction"]
         asset_flags = exposure_metadata["asset_flags"]
         print(
             "Entry blocked: "
@@ -866,6 +906,17 @@ def run_cycle(session_state: dict, account_clients: list[tuple[AccountAssignment
                         "reason": "symbol_cycle_exception",
                         "stop": "unknown",
                     }
+                )
+                sync_incident_state(
+                    account_name=account_config.name,
+                    symbol=symbol_config.ticker,
+                    action="ERROR",
+                    reason="symbol_cycle_exception",
+                    bot_version=config.bot.version,
+                    strategy_name=symbol_config.strategy.name,
+                    strategy_version=symbol_config.strategy.version,
+                    interval=symbol_config.strategy.interval,
+                    context={"exception_message": str(exc)},
                 )
     print_cycle_summary(results)
     return results

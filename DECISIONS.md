@@ -322,3 +322,17 @@ Focus on capturing decision and intent.
 **Decision:** Add a `[logging]` section to `bot_config.toml` so the runtime can independently enable or disable the full `decision_log.csv`, full `strategy_context_log.jsonl`, compact `notable_decision_log.csv`, and compact `notable_strategy_context_log.jsonl` without changing code. Leave all four enabled by default while the bot is still under active development.  
 **Reasoning:** The team still benefits from verbose audit logs during strategy iteration and debugging, but the long-term plan is to rely more heavily on the compact notable-event logs once the bot stabilizes. Exposing log-retention choices in config keeps the current development defaults intact while creating a clean path to reduce noise and file growth later. This also avoids turning log retention into a code-edit decision every time the workflow changes.  
 **Approved by:** Joshua  
+
+## D-043
+**Date:** 2026-05-03  
+**Topic:** Gitignored Local-Only Archive Area  
+**Decision:** Add `archive/local_only/` as a gitignored archive area for large or intermediate local artifacts that should be preserved on one machine but not committed to the repository. Move the archived notable-log reset folder into this area and use the same location for retired full runtime logs.  
+**Reasoning:** Some historical runtime artifacts are still worth keeping for safety, comparison, or recovery, but they are too large or too noisy to belong in the shared Git history. A dedicated local-only archive keeps those files available without polluting `git status`, tempting accidental commits, or mixing local scratch history with curated team-shared artifacts.  
+**Approved by:** Joshua  
+
+## D-044
+**Date:** 2026-05-03  
+**Topic:** Runtime Logging Pivot to Action Logs Plus Incident Lifecycles  
+**Decision:** Stop relying on the full per-cycle `decision_log.csv` and `strategy_context_log.jsonl` by default, archive the current full copies locally, and keep `trade_log.csv` plus a tighter compact action layer instead. Update `notable_decision_log.csv` and `notable_strategy_context_log.jsonl` so they now keep only real non-`HOLD` actions. Add a new append-only `blocker_incident_log.jsonl` with a small gitignored `blocker_incident_state.json` helper so policy holds and diagnosable blockers are tracked as `opened` / `heartbeat` / `resolved` lifecycle events instead of being written every cycle.  
+**Reasoning:** The original full runtime logs were useful while validating the bot's minute-by-minute behavior, but they grew too quickly and were dominated by repetitive polling rows that were no longer useful for teammate analysis or long-term retention. Earlier compact notable logs still allowed repeated `HOLD` blockers such as `market_closed`, `flatten_window_no_new_entries`, `asset_not_shortable`, and similar conditions to clutter the shared logs. Splitting the logging architecture into three purposes works better: `trade_log.csv` for real fills/orders, compact notable logs for real actions, and a dedicated lifecycle-style incident log for blockers/policy holds. This preserves evidence about when an issue started, whether it persisted, and when it resolved, while avoiding the old per-cycle spam and without returning to slow full-file rewrites.  
+**Approved by:** Joshua  

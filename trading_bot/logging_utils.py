@@ -91,8 +91,8 @@ def make_event_id() -> str:
 
 
 def is_notable_decision(action: str, reason: str) -> bool:
-    """Return True when a decision is more informative than routine no-trade polling."""
-    return action != "HOLD" or reason != "no_trade"
+    """Return True when a decision reflects a real action rather than a hold."""
+    return action != "HOLD"
 
 
 def configure_logging(

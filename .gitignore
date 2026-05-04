@@ -12,3 +12,5 @@ __pycache__/
 strategy_context_log.jsonl
 decision_log.csv
 trade_log.csv
+archive/local_only/
+blocker_incident_state.json
