@@ -1,0 +1,74 @@
+CS322 Final Report AI Helper Instructions
+
+Purpose
+- Use this file to guide any AI helper that is assisting with the final report writeup.
+- Treat this as project-specific editing guidance, not as source material for report claims.
+
+Important Constraints
+- Do not add a yfinance methodology section unless explicitly asked.
+- Phase 1 was a separate professor check-off that the team already completed.
+- Preserve the current report's main narrative and technical focus on Alpaca, backtesting, strategy evolution, and live paper trading.
+- Do not invent metrics, dates, artifact paths, or results.
+- Only use repo-backed evidence.
+
+Primary Fixes To Make
+1. Replace the TODO chart placeholders with the actual shared_backtests chart files.
+2. Fix the report date inconsistency so the title page date matches the latest evidence included in the paper.
+3. Add paper-trade report analysis once those artifacts are available in the repo and intended for the report.
+4. Optionally include team-building photos near the end if the team decides that is safest for the rubric, but do not overemphasize them.
+5. Do not bloat the paper with a full source-code appendix unless the team decides it is required for submission or separately required by the professor.
+
+Preferred Repo Sources
+- shared_backtests/manifest.csv
+- shared_backtests/INDEX.md
+- RESEARCH_LOG.md
+- DECISIONS.md
+- paper_trade_reports/*/summary.json when using live paper-trade analysis
+
+Canonical Report Artifacts
+- BT-007 NVDA MACD 1Y comparison run
+- BT-011 tuned NVDA VWAP/RSI 1Y comparison run
+- BT-012 ALB 1Y reference run
+
+Use These Exact Chart Files
+- shared_backtests/2026-04-02_00-40-22_ALB_macd_pullback_2025-03-31_2026-03-31/chart.png
+- shared_backtests/2026-04-21_01-41-30_NVDA_macd_pullback_2025-04-21_to_2026-04-21/chart.png
+- shared_backtests/2026-04-21_01-45-07_NVDA_vwap_rsi_mean_reversion_2025-04-21_to_2026-04-21_max_bars_in_trade_15/chart.png
+
+Paper-Trade Report Metrics Already Available In Repo
+- macd_pullback_paper summary:
+  trade_count = 38
+  win_rate_pct = 55.2632
+  total_return_pct = 0.6427
+  profit_factor = 1.8936
+  max_drawdown_pct = -0.2156
+- vwap_rsi_paper summary:
+  trade_count = 67
+  win_rate_pct = 34.3284
+  total_return_pct = 0.0592
+  profit_factor = 1.0590
+  max_drawdown_pct = -0.3417
+
+Writing Guidance
+- Keep the current scientific and technical tone.
+- Tighten wording rather than expanding into unrelated background.
+- Keep claims modest and evidence-based.
+- Emphasize that the report is a progress snapshot of the current system and results, not a claim of finished production readiness.
+- Do not oversell the strategy or imply readiness for live capital deployment.
+
+What To Avoid
+- Do not make up explanations for missing artifacts.
+- Do not silently update dates, figures, or results without checking the repo.
+- Do not replace concrete repo-backed details with vague AI filler.
+- Do not rewrite the report into a generic finance paper.
+
+Recommended Workflow For The AI Helper
+1. Read shared_backtests/INDEX.md and shared_backtests/manifest.csv first.
+2. Use RESEARCH_LOG.md to align the narrative with the actual research sequence.
+3. Use DECISIONS.md only for project-history or architecture-choice context.
+4. When discussing results, prefer summary.json, curated shared artifacts, and paper_trade_reports summaries over guessing from prose.
+5. If adding or revising figure references, use the exact chart paths listed above.
+
+Short Report Positioning
+- This report is meant to capture the team's current project progress and current evidence set for the class.
+- The project may continue later, but the report should describe the present state honestly and clearly.
