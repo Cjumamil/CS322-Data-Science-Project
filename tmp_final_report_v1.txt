@@ -1,0 +1,1072 @@
+FILE: Final Report v1.pdf
+PAGES: 26
+
+--- PAGE 1 ---
+
+Algorithmic Day Trading Bot:
+An EMA-Band MACD Pullback Continuation
+Strategy
+Applied to US Equity Markets
+Cooper Jumamil Ulyses Gonzalez Joshua Truong
+Havanna Robbins
+Team Better Buzzington
+Data Science 322, Spring 2026
+April 22, 2026
+Abstract
+We present a quantitative day trading system that combines exponential mov-
+ing average (EMA) bands, moving-average convergence/divergence (MACD) mo-
+mentum analysis, and pullback-continuation pattern recognition to identify high-
+probability entries in 5-minute US equity data. The bot evolved over two academic
+semesters from a naive SMA crossover baseline into a multi-filter confluence entry
+pipeline with a slope-based MACD failure exit, deployed live on the Alpaca paper-
+trading API. Backtests across a multi-asset universe—Microsoft (MSFT), NVIDIA
+(NVDA), Advanced Micro Devices (AMD), and the ARK Innovation ETF (ARKK),
+with Albemarle (ALB) used as a longer-horizon historical sandbox—show consis-
+tent positive expectancy on trending names and confirm that relaxing a prior trend-
+alignment gate on April 19–20 improved activity and returns across every tested
+symbol (NVDA +0.61%→+0.95% / 669→933 trades, MSFT +0.15%→+0.26%
+/ 154→211 trades, AMD−0.96%→ −0.57% / 381→503 trades; recorded in
+RESEARCH LOG.mdentry R-002 and theshared backtests/* trend alignment sweep summary.json
+artifacts). A pooled XGBoost entry filter was implemented and evaluated against
+the plain strategy over a walk-forward holdout; although it modestly reduced aver-
+age drawdown (−0.0909%→ −0.0762%), it underperformed the plain baseline on
+combined profit factor (1.0828 vs. 1.1601) and was thereforenotpromoted for live
+paper trading (R-003). A complementary VWAP + RSI mean-reversion strategy
+was added (R-004), tuned on NVDA tomax bars in trade= 15 for a one-year
+result of +0.2751% / PF 1.5873 / 127 trades (R-005), and promoted into a sep-
+arate Alpaca paper account for a controlled live side-by-side comparison against
+the MACD pullback baseline (R-006). Live paper trading exercised long entries,
+short entries, MACD-failure exits, take-profit exits, and time-stop exits, validating
+every coded pathway on real market data. The report documents the strategy ar-
+chitecture, implementation, data results, and the honest limitations of the system,
+including regime dependence, sector concentration, and modest absolute profitabil-
+ity.
+1
+
+--- PAGE 2 ---
+
+Contents
+1 Introduction 4
+2 Methodology & Code Explanation 4
+2.1 Technical-Indicator Foundations . . . . . . . . . . . . . . . . . . . . . . . 4
+2.2 Strategy Architecture: Multi-Filter Entry Pipeline . . . . . . . . . . . . . 5
+2.3 Exit Logic . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+2.4 Parameter Evolution (Sept 2025 – Apr 2026) . . . . . . . . . . . . . . . . 6
+2.5 Decision-Loop Pseudocode . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+2.6 Modular System Architecture . . . . . . . . . . . . . . . . . . . . . . . . 7
+2.6.1 Data Acquisition . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+2.6.2 Alpaca Order Submission . . . . . . . . . . . . . . . . . . . . . . 8
+3 Results 8
+3.1 Multi-Asset Performance Dashboard . . . . . . . . . . . . . . . . . . . . 8
+3.2 ALB Detailed Backtest (Reference Asset) . . . . . . . . . . . . . . . . . . 8
+3.3 Exit-Reason Distribution (ALB 1Y) . . . . . . . . . . . . . . . . . . . . . 9
+3.4 Pooled XGBoost Entry-Filter Evaluation . . . . . . . . . . . . . . . . . . 9
+3.5 VWAP + RSI Mean-Reversion Pilot . . . . . . . . . . . . . . . . . . . . 9
+3.6 Live Paper Trading: April 16 – April 24, 2026 . . . . . . . . . . . . . . . 10
+3.7 Backtest-to-Live Gap . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+4 Discussion 11
+4.1 The Journey: Key Turning Points . . . . . . . . . . . . . . . . . . . . . . 11
+4.2 Implementation Challenges and Debugging . . . . . . . . . . . . . . . . . 11
+4.2.1 Legacy “EMA200” Column Naming . . . . . . . . . . . . . . . . . 11
+4.2.2 MACD Exit Redesign: Crossover vs. Slope . . . . . . . . . . . . . 11
+4.2.3 Trend-Alignment Gate (April 20 Relaxation) . . . . . . . . . . . . 12
+4.2.4 Missing Backtest Artifacts . . . . . . . . . . . . . . . . . . . . . . 12
+4.2.5 Pooled XGBoost Filter: Negative Result . . . . . . . . . . . . . . 12
+4.2.6 Alpaca API: Polling, Shortability, and Preflight . . . . . . . . . . 13
+4.3 Risk Analysis and Limitations . . . . . . . . . . . . . . . . . . . . . . . . 13
+4.3.1 Potential NVDA Overfitting . . . . . . . . . . . . . . . . . . . . . 13
+4.3.2 Regime Sensitivity . . . . . . . . . . . . . . . . . . . . . . . . . . 13
+4.3.3 Slippage and Execution . . . . . . . . . . . . . . . . . . . . . . . . 13
+4.3.4 Sector Concentration . . . . . . . . . . . . . . . . . . . . . . . . . 13
+4.3.5 Modest Absolute Profitability . . . . . . . . . . . . . . . . . . . . 13
+4.3.6 Small Sample and Live Data . . . . . . . . . . . . . . . . . . . . . 14
+4.4 Strengths of the Approach . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+5 Conclusion 14
+A Source-Code and Module Structure 16
+B Team Members and Contributions 17
+C Promoted Baseline Configuration (April 20, 2026) 17
+D Representative Live-Trade Detail (ARKK, April 16, 2026) 20
+2
+
+--- PAGE 3 ---
+
+E Backtest Charts 20
+F Team-Building Activities 20
+G Glossary 20
+3
+
+--- PAGE 4 ---
+
+1 Introduction
+In the fall of 2025, as we began Data Science 322, we asked ourselves a question that has
+captivated traders and engineers for decades:Can a machine learn to trade better than
+its designers?The answer, we discovered, is not a simple yes or no, but rather a nuanced
+journey of discovery, failure, iteration, and hard-won insight. Our team set out to build
+an algorithmic day trading bot, leveraging real-world APIs and historical market data.
+We chose the Alpaca brokerage platform for both its paper-trading sandbox and its IEX
+historical-bar feed, and used Python as the execution engine. What began as a textbook
+SMA crossover strategy—elegant in its simplicity—soon revealed itself to be inadequate.
+The markets demanded more sophistication, more nuance, morestructure. This report
+follows a narrative arc while remaining grounded in quantitative evidence. Section 2
+describes the strategy architecture and code organization. Section 3 presents empiri-
+cal results across multiple securities, time horizons, and the live paper-trading window.
+Section 4 discusses the key turning points in our strategy evolution, operational chal-
+lenges including legacy artifacts, MACD exit redesign, and trend-alignment relaxation,
+and reflects candidly on overfitting and sector-concentration risks. We also describe an
+out-of-sample evaluation of a pooled XGBoost entry filter that we ultimately chosenot
+to promote (R-003), the addition and tuning of a VWAP + RSI mean-reversion strategy
+(R-004, R-005), and the dual-account live comparison setup that began on April 23, 2026
+(R-006). The core insight that reshaped our entire architecture was this:The best trades
+are not trend-starts, but pullback re-entries within a confirmed trend.Translating that
+insight into code, filters, and disciplined exits is what this report is about.Team:Cooper
+Jumamil, Ulyses Gonzalez, Joshua Truong, Havannah.Project duration:September
+2025 – April 2026.
+2 Methodology & Code Explanation
+2.1 Technical-Indicator Foundations
+The strategy rests on three textbook indicators. The Simple Moving Average (SMA)
+with windowkis
+SMA(k)
+t = 1
+k
+k−1X
+i=0
+Pt−i.(1)
+The Exponential Moving Average (EMA) weights recent prices more heavily through a
+recursive update,
+EMAt =αP t + (1−α) EMA t−1, α= 2
+k+ 1 .(2)
+We employ an EMAbandof windowk= 72 bars in the promoted live baseline to define
+a dynamic mid-line around which pullbacks are measured. The historical ALB reference
+runs cited in this report used an earlierk= 200 configuration; the DataFrame column
+retains the nameEMA200 *in both cases for backward compatibility with earlier serialized
+state. The MACD is
+MACDt = EMA (12)
+t −EMA (26)
+t ,Signal t = EMA (9) 
+MACDt
+
+,(3)
+with histogram
+Histogramt = MACDt −Signal t.(4)
+4
+
+--- PAGE 5 ---
+
+The MACD captures trend/momentum divergence, while the histogram exposes momen-
+tumacceleration. We additionally define a two-bar slope of the MACD line, used in the
+redesigned exit logic,
+slopet = MACDt −MACD t−2.(5)
+2.2 Strategy Architecture: Multi-Filter Entry Pipeline
+A position is opened only when every filter in Table 1 aligns on the same bar. The pro-
+moted v2 implementation (trading bot/strategies/macd pullback.py) chains seven
+distinct gates rather than the textbook four-layer summary: the description below matches
+the actual code, not the conceptual sketch. The conjunction is intentionally aggressive
+Table 1: Promoted entry pipeline formacd pullbackv2. All gates must be true on the
+same bar for an entry order to be submitted. Long-side criteria are stated; short-side
+criteria are mirrored.
+Filter Criterion
+Trend filterClose > EMA200 highfor at least
+min bars above band for long=8 of the last
+trend persistence lookback=12 bars, with
+ema band slope frac >= 0.001.
+Sideways guard Reject when more thanmax inside band bars=9 of
+the lastsideways lookback=12 bars closed inside the
+band.
+Prior-impulse filter Within the lastprior impulse lookback=20 bars
+there was a high extension above the band of at least
+min prior impulse frac of price=0.01 (≥1%).
+Pullback structure Price retraced into the band within the
+lastmax bars since pullback touch=8
+bars without overshooting by more than
+max pullback band overshoot frac=0.002.
+require recent trend alignmentrelaxed tofalse
+on April 20 (R-002).
+MACD-zero contextMACD > 0(require macd above zero for long=true).
+Re-entry trigger Bar must satisfyallenabled triggers: histogram re-
+expansion (histogram rising), reclaim of EMA12
+(Close > EMA12), reclaim of EMA26 (Close >
+EMA26), and apullback breakout lookback=3 bar
+high breakout.
+Session & risk Inside regular hours (09:30–16:00 ET), past
+the firstopening no trade bars=6 bars (30
+min), and the computed entry-stop respects
+max stop distance frac of price=0.04.
+onrejectingweak setups: a single failing filter blocks entry, which is consistent with the
+strategy’s much largerlong entry signal count/trade countratio in the research-log
+sweeps (e.g. NVDA five-year: 973 long-entry candidates filtered down to 453 long entries
+after risk-plan validation; recorded innvda trend alignment sweep summary.json).
+5
+
+--- PAGE 6 ---
+
+2.3 Exit Logic
+Exits fire via the first-triggered of four mechanisms, summarised in Table 2. The single
+most important engineering change of the project was the April 14 redesign of the MACD
+failure exit, which replaced a simple histogram crossover with a slope-based momentum-
+deterioration detector. This change alone accounted for the majority of improvement in
+backtested exit quality; in our ALB 1Y study 53% of all exits come from the MACD-
+failure branch, so its calibration dominates strategy behaviour.
+Table 2: Exit mechanisms and their triggering precedence. The stop is dynamic (anchored
+to the EMA band) andcapped, not a fixed-percent trigger.
+Exit type Condition Precedence
+Take-Profit Profit≥1.5R, whereRis the
+entry-to-stop distance computed by
+assess stop distance(stop model =
+ema200 band buffer).
+1
+Stop-Loss Price hits the dynamic stop placed
+at the opposite EMA-band edge±
+ema stop buffer pct=0.001. The
+candidate stop is rejected pre-entry
+ifstop distance frac of price >
+max stop distance frac of price=0.04.
+1
+MACD Failure Aftermin bars before macd exit=10,
+the 2-bar MACD slope
+(macd exit slope lookback=2) turns
+against the trade with magnitude≥
+macd exit min slope frac of price=0.0008
+and the histogram is moving the same way
+(macd exit requires histogram confirmation=true).
+2
+Time Stop Position open pastmax bars in trade=30
+(≈2.5 hours on 5-min bars).
+3
+End-of-day flatten Account-levelflatten before close=true,
+flatten minutes before close=5; closes
+any open position 5 min before the bell.
+4
+2.4 Parameter Evolution (Sept 2025 – Apr 2026)
+Table 3 documents the concrete parameter changes that moved the strategy from its
+September 2025 prototype to the April 2026 live baseline.
+2.5 Decision-Loop Pseudocode
+The live decision loop is deliberately small. The per-bar pseudocode in Listing 1 captures
+the bot’s control flow; concrete implementations live inmain.py,execution.py, and
+strategies/macd pullback.py.
+Listing 1: Per-bar decision loop (simplified pseudocode).
+for each 5 - minute bar close :
+6
+
+--- PAGE 7 ---
+
+bars = f e t c h _ l a t e s t _ b a r s ( symbol , window = lookback )
+i n d i c a t o r s = c o m p u t e _ i n d i c a t o r s ( bars ) # EMA band , MACD ,
+histogram , slopes
+if w i t h i n _ s e s s i o n _ w i n d o w () and p o s i t i o n _ i s _ f l a t () :
+if trend_ok ( i n d i c a t o r s ) \
+and p u l l b a c k _ o k ( i n d i c a t o r s ) \
+and m o m e n t u m _ o k ( i n d i c a t o r s ) :
+order = alpaca . s u b m i t _ o r d e r (
+symbol = symbol ,
+qty = risk . s i z e _ f o r _ s y m b o l ( symbol , price ,
+b u y i n g _ p o w e r ) ,
+side = signal_side ,
+type = " market " ,
+t i m e _ i n _ f o r c e = " day " ,
+)
+state . r e g i s t e r _ e n t r y ( order , i n d i c a t o r s )
+if p o s i t i o n _ i s _ o p e n () :
+if t a k e _ p r o f i t _ h i t () or s t o p _ l o s s _ h i t () \
+or t i m e _ s t o p _ e x p i r e d () \
+or m a c d _ f a i l u r e _ d e t e c t e d () :
+alpaca . c l o s e _ p o s i t i o n ( symbol )
+state . r e g i s t e r _ e x i t ( reason )
+2.6 Modular System Architecture
+The codebase is organised into functional modules (full layout in Appendix A):
+•main.py: live event loop; polls Alpaca on a 60-second cadence (poll interval seconds)
+for positions and bars. Order-status re-checks after submission use a separate 2-
+second poll (order status poll seconds).
+•backtest.py: offline event-driven engine replaying historical OHLCV pulled from
+the Alpaca IEX feed.
+•data.py: Alpaca bar aggregation and request normalization.
+•broker.py: order-submission wrapper with shortability/ETB checks.
+•execution.py: entry/exit signal logic.
+•risk.py: position sizing, stop-loss placement, and portfolio exposure cap.
+•state.py: trade state machine (entry, management, exit).
+•strategies/: pluggable strategy classes (sma crossover.py,macd pullback.py,
+macd pullback xgboost.py,vwap rsi mean reversion.py).
+•xgboost filter.py,train xgboost filter.py: pooled ML entry-filter research.
+•bot config.toml: editable TOML configuration shared across backtest and live
+runs.
+7
+
+--- PAGE 8 ---
+
+2.6.1 Data Acquisition
+Historical 5-minute OHLCV is fetched from Alpaca’s IEX feed through thealpaca-py
+SDK (trading bot/data.py), which returns a pandas DataFrame indexed by timestamp.
+from datetime import datetime , timezone
+from t r a d i n g _ b o t . data import d o w n l o a d _ d a t a _ r a n g e
+df = d o w n l o a d _ d a t a _ r a n g e (
+" NVDA " , " 5 m " ,
+datetime (2021 , 3 , 31 , tzinfo = timezone . utc ) ,
+datetime (2026 , 3 , 31 , tzinfo = timezone . utc ) ,
+)
+2.6.2 Alpaca Order Submission
+Live orders use the Alpaca REST client:
+import a l p a c a _ t r a d e _ a p i as tradeapi
+api = tradeapi . REST ( api_key = ALPACA_API_KEY ,
+s e c r e t _ k e y = ALPACA_SECRET_KEY ,
+base_url = A L P A C A _ B A S E _ U R L )
+def s u b m i t _ m a r k e t _ o r d e r ( symbol , qty , side ) :
+return api . s u b m i t _ o r d e r ( symbol = symbol , qty = qty , side = side ,
+type = " market " , t i m e _ i n _ f o r c e = " day " )
+A broker-sideshortable/ETB check inbroker.pygates any short order before it reaches
+the exchange.
+3 Results
+3.1 Multi-Asset Performance Dashboard
+Table 4 summarises backtest performance across the most heavily studied symbol/win-
+dow combinations. The ALB rows are exact numbers from savedsummary.jsonarti-
+facts underbacktests/and were produced with the earlier v1 reference configuration
+(trend ema window=200). ALB is now an archived/legacy sandbox kept commented-out
+inbot config.toml; the live universe in Section 3.6 is AAPL, AMD, AMZN, META,
+MSFT, NVDA, SPY, QQQ, IWM, ARKK. The NVDA, MSFT, and AMD rows are the
+April 19–20 promoted-baseline figures from the curatedshared backtests/* trend alignment sweep summary.json
+artifacts (R-002). The NVDA, MSFT, and AMD rows reflect therequire recent trend alignment=false
+promotion (R-002); under the prior configuration the same windows produced NVDA: 669
+trades / +0.6120% / PF 1.1162; MSFT: 154 trades / +0.1546% / PF 1.1679; AMD: 381
+trades /−0.9607% / PF 0.7248. Across the three symbols, relaxing the trend-alignment
+gate is the single largest backtest-level improvement of the project.
+3.2 ALB Detailed Backtest (Reference Asset)
+ALB remains our canonical reference because it has the longest, most stable intraday
+history we could assemble through the Alpaca IEX feed and it was our parameter-study
+sandbox for most of Spring 2026. Both ALB windows were run under the earlier v1
+8
+
+--- PAGE 9 ---
+
+reference configuration (trend ema window=200). The 1Y run was produced after the
+April 14 MACD-failure-exit redesign, so it exercises all four exit mechanisms; the 3Y run
+pre-dates that redesign and therefore exits only via stop-loss and take-profit. Table 5
+presents both windows side-by-side. Across the 3-year horizon the strategy executed 303
+trades with a 43.89% win rate yet a profit factor of 1.26, meaning every dollar of gross loss
+was matched by$1.26 of gross profit—a positive expected value, though modest. Max
+drawdown of−0.30% on a$100,000 simulated account demonstrates that position sizing
+and the 4% hard stop keep worst-case adverse excursions bounded. The 1Y run’s lower
+absolute return reflects both a shorter window and the inclusion of the MACD-failure
+exit, which is evaluated below.
+3.3 Exit-Reason Distribution (ALB 1Y)
+Table 6 tabulates the 166 exits from the ALB 1Y reference run, which was the first
+ALB backtest produced after the April 14 MACD-failure-exit redesign. The dominance
+of the MACD-failure branch (53%) is both a feature and a warning. A feature because
+it confirms the strategy is actively exiting on momentum decay rather than waiting out
+time stops. A warning because any miscalibration of the slope threshold propagates to
+more than half of all trades.
+3.4 Pooled XGBoost Entry-Filter Evaluation
+Between April 15 and April 21 we implemented a pooled XGBoost entry filter (see
+train xgboost filter.py) using three feature variants—pooledsymbol only,pooled context only,
+andpooled hybrid—trained across the active ten-symbol set. Training window: Jan 3,
+2023 – Dec 31, 2024. Validation: Jan 1 – Sep 30, 2025. Out-of-sample test: Oct 1, 2025 –
+Apr 21, 2026. Threshold selection occurred on the validation window; test results use full
+filtered-strategy backtests, not just label classification. The best validation variant was
+thepooled symbol onlymodel with a probability threshold of 0.50. On the held-out test
+window, however, the plainmacd pullbackbaseline remained stronger overall (Table 7).
+The filter did reduce worst-symbol drawdown (from−0.2375% to−0.2207%), and helped
+AAPL, AMZN, META, MSFT, and QQQ, but it hurt AMD, ARKK, IWM, NVDA, and
+SPY. The improvement was therefore not broad enough to justify promotion for April 22
+paper trading, and the pooled filter remains a research artifact.
+3.5 VWAP + RSI Mean-Reversion Pilot
+A distinctvwap rsi mean reversionstrategy was added (D-038, R-004) to compare
+against the trend-following baseline. The entry pipeline is documented intrading bot/strategies/vwap rsi mean reversion.py:
+a long fires when intraday price has stretched at leastmin distance from vwap frac
+below the session VWAP, RSI crosses back up through its oversold threshold, a con-
+firmation reversal bar prints, and an extreme-trend filter has not invalidated the day.
+Stops use arecent extreme buffermodel and the take-profit aims at a configurable
+VWAP-reversion fraction. In one-year 5-min backtests from April 21, 2025 to April 21,
+2026 the two strategies behaved very differently, as expected (Table 8, all rows from
+shared backtests/canonical artifacts BT-006–BT-011). The R-005 NVDA sweep iden-
+tifiedmax bars in trade= 15 as the cleanest first-pass improvement (+0.0522% absolute
+uplift in total return), with a secondary modest gain frommin distance from vwap frac=
+9
+
+--- PAGE 10 ---
+
+0.002 over the 0.003 default. Rather than collapsing both changes into a single multi-
+parameter jump, R-006 pinned the cleaner saved configuration (mindistance from vwap frac=
+0.003,max bars in trade= 15) into a separate Alpaca paper account (vwap rsi paper)
+for a controlled live comparison against the MACD pullback baseline running on the
+originalmacd pullback paperaccount (see Section 3.6 and Appendix C).
+3.6 Live Paper Trading: April 16 – April 24, 2026
+Live paper trading on the originalmacd pullback paperaccount began on April 16,
+2026 and has continued through report submission. Across the recorded window the
+bot logged thousands of per-cycle entries indecision log.csv(the live numbers below
+are taken from the team’s local copy as of writing; the file is git-ignored, so a reviewer
+rerunning the bot would generate a different sample). As of the last logged session the
+live session state.jsonsnapshot shows themacd pullback paperaccount active on
+AAPL, AMD, AMZN, ARKK, META, MSFT, NVDA, and QQQ (last submitted actions
+stamped April 21–23, 2026), and the newvwap rsi paperaccount (stood up on April
+23 per R-006) active on AMD, AMZN, ARKK, IWM, META, MSFT, NVDA, and SPY
+(last submitted actions stamped April 23–24, 2026). Table 9 summarises the early order
+events on the MACD pullback account. The April 20 ARKK short-to-take-profit round
+trip (entry 78.702, exit 77.760, 49 shares) is the first live take-profit fill of the project,
+adding empirical weight to the exit-precedence design. The April 20 MSFT short closed
+via time stop, and two April 21 long positions closed via MACD failure—matching the
+exit distribution seen in backtest. After R-006 (April 23), thevwap rsi paperaccount
+began submitting its own independent orders against the same ten-symbol universe, so
+subsequent live evidence accumulates in two parallel streams that share market data but
+execute different strategies. The “single ARKK trade” of April 16 that dominated the
+earliest live window has since been superseded by a broader, more diverse sample. We
+do not claim statistical significance from a few dozen events, but the mix of long/short
+entries, MACD-failure exits, a take-profit exit, and a time-stop exit confirms that every
+coded pathway is reachable under live market conditions.
+3.7 Backtest-to-Live Gap
+Even with the expanded live sample, trade activity remains much sparser in live mode
+than in backtest. The contributors we identify are:
+1. Regime mismatch between April 2026 live conditions and the 2021–2025 backtest
+corpus.
+2. Polling-based data retrieval (60 s main-loop poll) versus event-driven bar-close as-
+sumption in the backtester.
+3. Bid/ask slippage relative to the backtest’s close-to-close fill model.
+4. Intra-bar dynamics: 5-minute aggregates may produce a signal that looked valid on
+close but has already been partially consumed by the time the live order fills.
+These are discussed further in Section 4.
+10
+
+--- PAGE 11 ---
+
+4 Discussion
+4.1 The Journey: Key Turning Points
+With hindsight, the project unfolded in four distinct phases.Phase 1 (Sept–Oct 2025):
+The Crossover Era.We implemented a textbook SMA(20, 200) crossover on Alpaca
+IEX data. It was elegant, easy to code, and consistently unprofitable. Whipsaws in
+sideways regimes dominated the P&L. The lesson was humbling: simple is not always
+better.Phase 2 (Nov–Dec 2025): The EMA-Band Hypothesis.We shifted to an
+EMA band, added pullback detection, and discovered that entering during priceweak-
+ness—not strength—materially improved win rate and risk-adjusted return. This was the
+conceptual breakthrough that reshaped the architecture.Phase 3 (Jan–Mar 2026):
+Parameter Tuning and MACD Integration.We refined the EMA window (com-
+paring 50, 72, 100, and 200), integrated MACD histogram for momentum confirmation,
+and began backtesting at scale. The April 7 sweep confirmed that the 72-bar EMA out-
+performed the 200 on NVDA with pullback logic, and that a 3-bar pullback-breakout
+lookback out-performed stricter values of 5, 8, and 10. The ALB sandbox was held at
+k= 200 for continuity; NVDA, MSFT, and AMD were migrated tok= 72.Phase
+4 (Apr 2026): MACD Failure Redesign, Trend-Alignment Relaxation, ML
+Negative Result, and Dual-Strategy Live Comparison.On April 14 our initial
+crossover-based MACD exit was replaced with the slope-based failure exit (D-032, D-033),
+immediately improving exit timing in backtests. On April 19–20 a second conceptual re-
+vision relaxedrequire recent trend alignmenttofalse(R-002, D-036), which lifted
+NVDA returns from +0.6120% to +0.9511% and MSFT from +0.1546% to +0.2560% on
+matched windows. On April 21 a pooled XGBoost entry filter was evaluated and explicitly
+notpromoted (R-003, D-037), and a new VWAP + RSI mean-reversion strategy (R-004,
+D-038) was scaffolded in research mode; a follow-up NVDA sweep that same day pinned
+max bars in trade=15 as the cleanest tuning improvement (R-005, BT-011). On April
+23 the project moved past a single live strategy: R-006 promoted the tuned VWAP/RSI
+configuration into a second Alpaca paper account, so that the MACD pullback base-
+line and the mean-reversion strategy now trade the same ten symbols side-by-side, with
+independent broker-facing state.
+4.2 Implementation Challenges and Debugging
+4.2.1 Legacy “EMA200” Column Naming
+Early iterations used a 200-bar band; when we migrated the live baseline to 72 we kept
+theEMA200 *column names in the indicator DataFrame for backward compatibility with
+serialized state and logging. The computation is correct, but the name is misleading
+during audits. We document the artifact explicitly in code comments and in this report
+and plan to refactor the column name post-submission.
+4.2.2 MACD Exit Redesign: Crossover vs. Slope
+The original exit condition was
+if h is to gr am [ t ] < 0 and h i st og ra m [t -1] > 0:
+exit () # simple zero - crossing
+11
+
+--- PAGE 12 ---
+
+The crossover is a lagging criterion: by the time the histogram crosses zero, significant
+P&L has already been conceded. We replaced it with
+slope = macd [ t ] - macd [t -2]
+if b ar s_ he ld >= m i n _ b a r s _ b e f o r e _ m a c d _ e x i t and slope < 0 \
+and ba rs _h el d < ti me _s to p and h i s t o g r a m _ c o n f i r m s _ e x i t () :
+exit () # slope - based failure
+Because slope is a derivative, it reacts to momentum decay one to two bars earlier,
+reducing late exits. In-sample tests showed profit-factor improvements of roughly 5–8%
+across our test universe.
+4.2.3 Trend-Alignment Gate (April 20 Relaxation)
+The earlier version of the strategy required the same-direction trend state toremain
+aligned throughout the pullback. Chart review on NVDA and AMD surfaced repeated
+cases where the pullback damaged the trend state momentarily, yet the subsequent re-
+covery bar was clearly tradeable. Relaxing the gate (R-002, D-036) improved all three
+tested symbols:
+•NVDA: return +0.61%→+0.95%; trades 669→933.
+•MSFT: return +0.15%→+0.26%; PF 1.17→1.21; trades 154→211.
+•AMD: return−0.96%→ −0.57%; PF 0.72→0.87; trades 381→503.
+The conceptual lesson: a pullback setup can still be valid provided the recent trendcontext
+is clear and the day is not sideways, even if perfect trend alignment is not preserved
+through the pullback itself.
+4.2.4 Missing Backtest Artifacts
+An operational honesty note: the NVDA, MSFT, and AMD numbers in Table 4 are
+drawn fromRESEARCH LOG.mdentry R-002 rather than from savedsummary.jsonartifacts
+underbacktests/. During the April 20 parameter sweep we relied on the CLI sweep
+mode’s printed output and failed to persist the per-run summaries. The numbers are
+internally reproducible from the config values recorded in the research log plus the current
+bot config.toml, but a reviewer attempting bit-exact verification of those three rows
+would need to rerun them. We flag this as a reproducibility gap rather than a claim that
+the numbers are incorrect.
+4.2.5 Pooled XGBoost Filter: Negative Result
+The pooled XGBoost filter is an instructive negative result. Validation selected a low
+probability threshold of 0.50 on a symbol-aware (but symbol-only-featured) model, sug-
+gesting the learner was anchoring to symbol priors rather than robust cross-symbol setup
+quality. On out-of-sample test, the filter reduced drawdown marginally but lost more
+alpha than it saved (profit factor 1.08 vs. baseline 1.16, per-symbol return 0.012% vs.
+0.038%). We chose to ship the plain strategy into April 22 paper trading rather than a
+filter that had not earned its keep.
+12
+
+--- PAGE 13 ---
+
+4.2.6 Alpaca API: Polling, Shortability, and Preflight
+Several operational concerns surfaced during live trading. Alpaca paper-trading en-
+forces a shortability/ETB list; broker-side checks inbroker.pyreject short attempts
+for non-shortable symbols. The bot polls the Alpaca API on a 60-second cadence
+(poll interval seconds) and re-checks order status every 2 seconds after submission
+(order status poll seconds), which is adequate for a 5-minute-bar strategy but would
+be limiting at faster cadences. A startuppreflightreport (D-034) validates environment,
+keys, and the symbol list before the event loop starts, and per-symbol exception isolation
+prevents a single malformed bar from taking down the whole bot.
+4.3 Risk Analysis and Limitations
+4.3.1 Potential NVDA Overfitting
+Most baseline parameters were first optimised on NVDA, a mega-cap growth stock with
+strong intraday trending behaviour. AMD’s persistently negative back-test performance
+(under both configurations) and MSFT’s dependence on the April 20 gate relaxation
+together suggest the baseline may be partially over-fit to NVDA’s regime. A future
+extension should walk-forward tune across a basket to reduce this bias.
+4.3.2 Regime Sensitivity
+Pullback-continuation strategies assume trending market structure with transient pull-
+backs. In choppy, mean-reverting regimes the same pullback signature becomes a trap.
+The strategy lacks an explicit regime detector (ADX, realised-volatility band, or market-
+profile classification) and will mis-trade range-bound days. The VWAP + RSI mean-
+reversion research path is motivated in part as a complementary regime tool.
+4.3.3 Slippage and Execution
+Backtests assume fill at bar-close prices. The live ARKK trade on April 16 filled at
+entry$77.43 and exit$76.977 for−0.585%; the April 20 ARKK short round-trip (78.702
+→77.76) captured a take-profit, but bid/ask spread, order-queue position, and intra-bar
+movement all consume edge in production. A production-grade version would incorporate
+a slippage model during backtest.
+4.3.4 Sector Concentration
+Our active symbol set is dominated by US large-cap technology (AAPL, AMD, AMZN,
+META, MSFT, NVDA) plus broad-market ETFs (SPY, QQQ, IWM) and one thematic
+growth ETF (ARKK). Correlated drawdowns during a tech-sector sell-off would hit the
+whole portfolio simultaneously.
+4.3.5 Modest Absolute Profitability
+The 3-year ALB back-test grossed≈$508 on$100,000 (+0.51% cumulative, roughly
++0.17% annualised). NVDA’s +0.95% over five years is better but still below a riskless
+Treasury return. The strategy’s edge is real but small; deployment with live capital would
+require either leverage, much larger notional, or meaningful transaction-cost reduction.
+13
+
+--- PAGE 14 ---
+
+4.3.6 Small Sample and Live Data
+A few dozen live order events on each paper account is a diagnostic sample, not an
+evaluative one. The short MSFT Q1-2025 backtest (seven trades) was correctly flagged
+as statistically uninformative even before the April 20 promotion expanded it to 211
+trades. The R-006 dual-account live comparison was set up specifically so that, as more
+live data accumulates, both strategies are evaluated on the same underlying market path
+rather than on cherry-picked replay windows.
+4.4 Strengths of the Approach
+1.Multi-layer entry confluence.Requiring trend, pullback, momentum, and ses-
+sion filters to align simultaneously materially cuts false signals compared with single-
+indicator systems.
+2.Slope-based MACD exit.Reacting to therateof momentum change rather than
+its level captures exits earlier than a zero-crossing rule.
+3.Pluggable architecture.The codebase supports multiple strategies side-by-side;
+macd pullback,macd pullback xgboost, and the newervwap rsi mean reversion
+share the same risk, order, and logging scaffolding.
+4.Honest ML evaluation.The XGBoost filter is an example of a disciplined nega-
+tive result: it was built, evaluated with walk-forward validation, andnotpromoted
+because the numbers did not justify it.
+5.Live paper-trading integration.The early MACD pullback paper account ex-
+ercised every coded exit path (long, short, take-profit, MACD failure, time stop),
+and since R-006 the parallelvwap rsi paperaccount extends that coverage to the
+mean-reversion code path on live data.
+5 Conclusion
+We have developed and evaluated an EMA-Band MACD Pullback Continuation strat-
+egy for algorithmic day trading on US equities. The system shows conceptually sound
+behaviour through positive multi-asset backtests (ALB 3Y: 303 trades, +0.5086% re-
+turn, PF 1.2556; NVDA 5Y under the April 20 baseline: 933 trades, +0.9511%, PF
+1.1224; MSFT 5Y: 211 trades, +0.2560%, PF 1.2068). It also stood up a complementary
+VWAP/RSI mean-reversion strategy that, when tuned tomax bars in trade=15, pro-
+duced the strongest single one-year run in the project (NVDA: 127 trades, +0.2751%, PF
+1.5873, max DD−0.0936%) and is now running in a separate Paper2 Alpaca account for
+a controlled live side-by-side comparison against the MACD baseline. Live paper trading
+exercises every coded pathway (long, short, take-profit, MACD failure, time stop, and
+end-of-day flatten) on real market data. Key takeaways:
+•Pullback continuation out-performs pure trend-following in our hands; entering
+during weakness within a confirmed trend is the dominant source of edge.
+•MACD slope is superior to MACD crossover for exits; the April 14 redesign im-
+proved exit timing and reduced late exits.
+14
+
+--- PAGE 15 ---
+
+•Relaxingrequire recent trend alignmenttofalseon April 20 was a conceptual
+shift, not a tuning tweak: it materially raised activity and returns on every tested
+symbol.
+•A pooled XGBoost entry filter, although technically functional, under-performed
+the baseline on our out-of-sample test and was not promoted—an example of dis-
+ciplined ML evaluation.
+•A VWAP + RSI mean-reversion path is now scaffolded as a complementary research
+track targeting regimes where pullback continuation struggles, and the R-006 Pa-
+per2 setup gives us an honest live A/B between the two strategies on a shared
+symbol set without forcing one architecture to win on paper before live evidence
+accumulates.
+Recommendations for future work:
+1. Add an explicit regime detector (ADX or realised-volatility-based) to gate strategy
+selection.
+2. Expand the tuning universe to multiple sectors (e.g. financials, healthcare) and
+employ walk-forward optimisation to reduce NVDA-centric bias.
+3. Integrate slippage and commission models directly into the backtester to reduce the
+backtest-to-live gap.
+4. Archive every promoted-config backtest run’s summary artifact so R-002-style re-
+sults are byte-exactly reproducible from the repo alone.
+5. Revisit the pooled ML filter with per-symbol calibration, stronger walk-forward
+validation, and features that capture trade quality rather than symbol priors.
+6. Promote the VWAP + RSI strategy to paper trading only after a broader cross-
+symbol sweep confirms robustness beyond NVDA.
+7. Move the decision loop from 60-second polling to Alpaca WebSocket streaming for
+tighter latency.
+Back-tests are backward-looking; live markets are unpredictable. The bot is a disciplined
+tool, not a crystal ball. We consider the system ready for expanded paper trading under
+the current baseline, and explicitlynotyet ready for live capital without further risk
+controls, sector diversification, and cost-inclusive validation.
+References
+References
+[1] Wilder, J. W. (1978).New Concepts in Technical Trading Systems. Trend Research,
+Ltd.
+[2] Pring, M. J. (2002).Technical Analysis Explained: The Successful Investor’s Guide
+to Spotting Investment Trends and Turning Points(4th ed.). McGraw-Hill.
+15
+
+--- PAGE 16 ---
+
+[3] Appel, G. (2005).Technical Analysis: Power Tools for Active Investors. Financial
+Times Press.
+[4] Murphy, J. J. (1999).Technical Analysis of the Financial Markets. New York Insti-
+tute of Finance.
+[5] Lopez de Prado, M. (2018).Advances in Financial Machine Learning. Wiley.
+[6] Chen, T., & Guestrin, C. (2016). XGBoost: A Scalable Tree Boosting System.Pro-
+ceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discov-
+ery and Data Mining, 785–794.
+[7] Alpaca Securities, Inc. (2026).Alpaca Trade API Documentation. Retrieved from
+https://docs.alpaca.markets/.
+[8] Alpaca Securities, Inc. (2026).alpaca-py Python SDK.https://github.com/
+alpacahq/alpaca-py.
+A Source-Code and Module Structure
+CS322 - Data - Science - Project /
+| - - t r a d i n g _ b o t /
+| | - - main . py # Live paper - trading
+event loop
+| | - - backtest . py # Offline b a c k t e s t i n g
+engine
+| | - - config . py # C o n f i g u r a t i o n object
+| | - - data . py # Alpaca IEX bar handling
+| | - - broker . py # Alpaca REST wrapper ,
+ETB checks
+| | - - state . py # Trade state machine
+| | - - ex ec ut io n . py # Entry / exit signal logic
+| | - - risk . py # Sizing , stops , exposure
+caps
+| | - - d e c i s i o n _ l o g g i n g . py # S t r u c t u r e d trade -
+decision logs
+| | - - l o g g i n g _ u t i l s . py # Console / file logging
+infra
+| | - - x g b o o s t _ f i l t e r . py # Inference - time pooled
+filter
+| | - - t r a i n _ x g b o o s t _ f i l t e r . py # Pooled training
+workflow
+| \ - - s t r a t e g i e s /
+| | - - base . py # Abstract strategy class
+| | - - s m a _ c r o s s o v e r . py # Phase -1 baseline
+| | - - m a c d _ p u l l b a c k . py # Promoted baseline ( v2 )
+| | - - m a c d _ p u l l b a c k _ x g b o o s t . py # XGBoost - filtered
+variant
+| \ - - v w a p _ r s i _ m e a n _ r e v e r s i o n . py # Research strategy
+16
+
+--- PAGE 17 ---
+
+| - - ba ck te st s / # Local backtest scratch
+( git - ignored )
+| - - s h a r e d _ b a c k t e s t s / # Curated team - p ub li sh ed
+b ac kt es ts
+| | - - INDEX . md # Audience / purpose guide
+| | - - manifest . csv # AI / reviewer - friendly
+metric manifest
+| | - - * _ t r e n d _ a l i g n m e n t _ s w e e p _ *. json # R -002 evidence ( BT
+-001.. BT -003)
+| | - - p o o l e d _ m a c d _ p u l l b a c k _ x g b _ *.* # R -003 XGBoost story ( BT
+-004 , BT -005)
+| | - - * _NVDA_ *.* # R -004.. R -006 VWAP
+c o m p a r i s o n runs
+| \ - - * _MSFT_ *.* # R -004 MSFT c o m p a r i s o n
+runs
+| - - models / # Trained XGBoost models
++ reports
+| - - archive / # Legacy bot / code ( incl .
+ALB symbol )
+| - - e x p l o r a t o r y / # N ot eb oo ks and
+e x p l o r a t o r y scripts
+| - - b o t _ c o n f i g . toml # P ar am et er c o n f i g u r a t i o n
+| - - l i v e _ s e s s i o n _ s t a t e . json # Per - symbol / account live
+state cache
+| - - d e c i s i o n _ l o g . csv # Per - cycle decision log
+( git - ignored )
+| - - tr ad e_ lo g . csv # Live order events ( git -
+ignored )
+| - - s t r a t e g y _ c o n t e x t _ l o g . jsonl # Strategy context
+s na ps ho ts ( git - ignored )
+| - - DE CI SI ON S . md # A r c h i t e c t u r e / workflow
+de ci s io ns
+| - - R E S E A R C H _ L O G . md # Strategy research
+findings (R -001.. R -006)
+| - - r u n _ b a c k t e s t . ps1 # Windows c o n v e n i e n c e
+wrapper
+| - - run_bot . ps1 # Windows c o n v e n i e n c e
+wrapper
+\ - - README . md
+B Team Members and Contributions
+C Promoted Baseline Configuration (April 20, 2026)
+The following TOML fragment reflects the baseline promoted after the April 20 trend-
+alignment relaxation. The strategy block reproduces the per-strategy defaults defined in
+trading bot/strategies/ init .py(these are the values every symbol inherits unless
+it explicitly overrides them inbot config.toml). The[bot],[execution],[risk], and
+symbol blocks are reproduced verbatim frombot config.toml.
+17
+
+--- PAGE 18 ---
+
+# --- Defaults from t r a d i n g _ b o t / s t r a t e g i e s / __init__ . py
+- - - - - - - - - - - - - - - -
+# ( Promoted m a c d _ p u l l b a c k v2 defaults ; every symbol inherits
+these
+# unless an account override is set in b o t _ c o n f i g . toml .)
+[ strategy . m a c d _ p u l l b a c k ]
+interval = " 5 m "
+l o o k b a c k _ b a r s = 700
+e m a _ f a s t _ w i n d o w = 12
+e m a _ s l o w _ w i n d o w = 26
+m a c d _ f a s t _ w i n d o w = 12
+m a c d _ s l o w _ w i n d o w = 26
+m a c d _ s i g n a l _ w i n d o w = 9
+e m a _ b a n d _ w i n d o w = 72 # legacy
+column name " EMA200_ *"
+o p e n i n g _ n o _ t r a d e _ b a r s = 6
+t r e n d _ p e r s i s t e n c e _ l o o k b a c k = 12
+m i n _ b a r s _ a b o v e _ b a n d _ f o r _ l o n g = 8
+m i n _ b a r s _ b e l o w _ b a n d _ f o r _ s h o r t = 8
+t r e n d _ s l o p e _ l o o k b a c k = 12
+m i n _ e m a _ b a n d _ s l o p e _ f r a c = 0.001
+s i d e w a y s _ l o o k b a c k = 12
+m a x _ i n s i d e _ b a n d _ b a r s = 9
+r e q u i r e _ r e c e n t _ t r e n d _ a l i g n m e n t = false # Apr 20 R
+-002 / D -036
+r e q u i r e _ p r i o r _ i m p u l s e = true
+p r i o r _ i m p u l s e _ l o o k b a c k = 20
+m i n _ p r i o r _ i m p u l s e _ f r a c _ o f _ p r i c e = 0.01
+p u l l b a c k _ m e m o r y _ b a r s = 20
+m a x _ b a r s _ s i n c e _ p u l l b a c k _ t o u c h = 8
+m a x _ p u l l b a c k _ b a n d _ o v e r s h o o t _ f r a c = 0.002
+r e q u i r e _ m a c d _ a b o v e _ z e r o _ f o r _ l o n g = true
+r e q u i r e _ m a c d _ b e l o w _ z e r o _ f o r _ s h o r t = true
+r e q u i r e _ h i s t o g r a m _ r e e x p a n s i o n = true
+r e q u i r e _ e m a 1 2 _ r e c l a i m = true
+r e q u i r e _ e m a 2 6 _ r e c l a i m = true
+r e q u i r e _ p u l l b a c k _ b r e a k o u t = true
+p u l l b a c k _ b r e a k o u t _ l o o k b a c k = 3
+e m a _ s t o p _ b u f f e r _ p c t = 0.001
+t a k e _ p r o f i t _ r i s k _ m u l t i p l e = 1.5
+m a x _ s t o p _ d i s t a n c e _ f r a c _ o f _ p r i c e = 0.04
+e n a b l e _ t i m e _ s t o p = true
+m a x _ b a r s _ i n _ t r a d e = 30
+e n a b l e _ m a c d _ f a i l u r e _ e x i t = true
+m i n _ b a r s _ b e f o r e _ m a c d _ e x i t = 10
+m a c d _ e x i t _ s l o p e _ l o o k b a c k = 2
+m a c d _ e x i t _ m i n _ s l o p e _ f r a c _ o f _ p r i c e = 0.0008
+m a c d _ e x i t _ r e q u i r e s _ h i s t o g r a m _ c o n f i r m a t i o n = true
+m a c d _ e x i t _ r e q u i r e s _ e m a 1 2 _ c o n f i r m a t i o n = false
+[ strategy . v w a p _ r s i _ m e a n _ r e v e r s i o n ]
+18
+
+--- PAGE 19 ---
+
+interval = " 5 m "
+l o o k b a c k _ b a r s = 500
+r s i _ w i n d o w = 14
+r s i _ o v e r s o l d _ t h r e s h o l d = 30.0
+r s i _ o v e r b o u g h t _ t h r e s h o l d = 70.0
+m i n _ d i s t a n c e _ f r o m _ v w a p _ f r a c = 0.002 # default ;
+Paper2 pins 0.003
+c o n f i r m a t i o n _ l o o k b a c k _ b a r s = 3
+m i n _ r e v e r s a l _ m o v e _ f r a c _ o f _ p r i c e = 0.0015
+r e q u i r e _ r e v e r s a l _ b a r = true
+r e q u i r e _ c a n d l e _ c o l o r _ c o n f i r m a t i o n = false
+s t o p _ r e f e r e n c e _ l o o k b a c k _ b a r s = 4
+s t o p _ b u f f e r _ p c t = 0.001
+t a k e _ p r o f i t _ v w a p _ f r a c t i o n = 1.0
+m a x _ s t o p _ d i s t a n c e _ f r a c _ o f _ p r i c e = 0.02
+e n t r y _ s t a r t _ m i n u t e s _ a f t e r _ o p e n = 30
+e n t r y _ e n d _ m i n u t e s _ b e f o r e _ c l o s e = 30
+e n a b l e _ t i m e _ s t o p = true
+m a x _ b a r s _ i n _ t r a d e = 15 # tuned by R
+-005 / R -006
+e n a b l e _ e x t r e m e _ t r e n d _ f i l t e r = true
+t r e n d _ l o o k b a c k _ b a r s = 6
+m a x _ t r e n d _ m o v e _ f r a c _ o f _ p r i c e = 0.02
+# --- b o t _ c o n f i g . toml excerpt
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+[ bot ]
+version = " 0.3.0 "
+r u n _ c o n t i n u o u s l y = true
+p o l l _ i n t e r v a l _ s e c o n d s = 60
+p a p e r _ t r a d i n g = true
+[ ex ec ut io n ]
+o r d e r _ s t a t u s _ p o l l _ s e c o n d s = 2
+o r d e r _ s t a t u s _ t i m e o u t _ s e c o n d s = 30
+e n a b l e _ b r o k e r _ s i d e _ s t o p _ l o s s = true
+r e q u i r e _ e a s y _ t o _ b o r r o w _ f o r _ s h o r t _ e n t r i e s = false
+[ risk ]
+m a x _ p o s i t i o n _ q t y = 0 # 0 disables
+the share cap
+r i s k _ f r a c t i o n _ o f _ b u y i n g _ p o w e r = 0.02
+s t o p _ l o s s _ p c t = 0.03
+t a k e _ p r o f i t _ p c t = 0.06
+f l a t t e n _ b e f o r e _ c l o s e = true
+f l a t t e n _ m i n u t e s _ b e f o r e _ c l o s e = 5
+m a x _ t o t a l _ p o s i t i o n _ f r a c t i o n _ o f _ b u y i n g _ p o w e r = 0.08
+# --- Dual - account live c o m p a r i s o n (R -006)
+- - - - - - - - - - - - - - - - - - - - - - - - - - -
+[[ accounts ]]
+name = " m a c d _ p u l l b a c k _ p a p e r "
+a p i _ k e y _ e n v = " A L P A C A _ A P I _ K E Y "
+s e c r e t _ k e y _ e n v = " A L P A C A _ S E C R E T _ K E Y "
+s t a t e _ n a m e s p a c e = " "
+19
+
+--- PAGE 20 ---
+
+# all 10 symbols inherit m a c d _ p u l l b a c k defaults above :
+# AAPL , AMD , AMZN , META , SPY , QQQ , IWM , ARKK , MSFT , NVDA
+[[ accounts ]]
+name = " v w a p _ r s i _ p a p e r "
+a p i _ k e y _ e n v = " P A P E R 2 _ A L P A C A _ A P I _ K E Y "
+s e c r e t _ k e y _ e n v = " P A P E R 2 _ A L P A C A _ S E C R E T _ K E Y "
+s t a t e _ n a m e s p a c e = " v w a p _ r s i _ p a p e r "
+# all 10 symbols use v w a p _ r s i _ m e a n _ r e v e r s i o n with the R -006 pins :
+# m i n _ d i s t a n c e _ f r o m _ v w a p _ f r a c = 0.003
+# m a x _ b a r s _ i n _ t r a d e = 15
+D Representative Live-Trade Detail (ARKK, April
+16, 2026)
+E Backtest Charts
+TODO:insert
+backtests/2026-04-02 00-40-22 ALB macd pullback 2025-03-31 2026-03-31 chart.png
+(ALB 1Y reference run, all four exit mechanisms exercised)
+Figure 1: ALB one-year reference backtest (2025-03-31 to 2026-04-01), the canonical run
+behind Tables 5 and 6.
+F Team-Building Activities
+Per the project rubric, the team documented its required team-building activities through
+the semester. Drop the team photos into aphotos/subfolder and uncomment the
+includegraphicslines below to include them.
+G Glossary
+•EMA band: Dynamic support/resistance zone defined by an exponential moving
+average (window 72 bars in the promoted baseline; 200 in historical ALB reference
+runs) used to identify pullback zones within a trend.
+20
+
+--- PAGE 21 ---
+
+TODO:insert NVDAmacd pullbackone-year chart (e.g. exported from
+the team dashboard for the
+shared backtests/2026-04-21 01-41-30 NVDA macd pullback 2025-04-21 to 2026-04-21
+run).
+Figure 2: NVDA one-year MACD pullback comparison run (BT-007).
+TODO:insert NVDAvwap rsi mean reversion(max bars=15) one-year
+chart (e.g. exported from
+shared backtests/2026-04-21 01-45-07 NVDA vwap rsi mean reversion 2025-04-21 to 2026-04-21 max bars in trade 15).
+Figure 3: NVDA tuned VWAP/RSI run (BT-011). This is the configuration pinned into
+the Paper2 live account by R-006.
+•Histogram (MACD): Difference between MACD and its signal line; an expanding
+histogram indicates accelerating momentum.
+•Profit Factor: Gross profit divided by gross loss; a value above 1.0 indicates a
+positive-expectancy system.
+•Pullback: A temporary retracement into dynamic support (long) or resistance
+(short) during an overall trend.
+•Regime: The prevailing structural state of the market (trending vs. mean-reverting).
+Strategies perform very differently across regimes.
+•Shortability / ETB: Alpaca’s designation of whether a stock is easy-to-borrow
+and therefore shortable.
+•Slippage: Difference between expected fill price (e.g. bar close) and actual execu-
+tion price.
+•Slope (MACD): Change in MACD value over a fixed window, indicating momen-
+tum acceleration or deceleration.
+21
+
+--- PAGE 22 ---
+
+TODO:team photo 1.jpg TODO:team photo 2.jpg
+Figure 4: Team Better Buzzington team-building activities, Spring 2026.
+•Walk-forward validation: Out-of-sample testing protocol in which the model is
+trained on an earlier window and evaluated on a strictly later window.
+•Win Rate: Percentage of trades that close with positive P&L. A high win rate is
+not sufficient for profitability if average loss exceeds average win.
+22
+
+--- PAGE 23 ---
+
+Table 3: Parameter evolution timeline. Only changes that were actually promoted to the
+working baseline are listed.
+Date Parameter Change and rationale
+Pre-Apr 1 EMA band window Initialised at 200 bars (column
+nameEMA200 *); all saved
+ALB reference backtests use
+this setting.
+Apr 7 EMA band window Reduced to 72 bars for the live
+baseline; out-performed 200
+on NVDA sweeps with pull-
+back logic.
+Apr 7 Pullback breakout
+lookback
+Fixed at 3 bars; stricter values
+(5/8/10) under-traded.
+Apr 14 MACD exit Replaced crossover logic with
+slope-based failure detection
+(D-032).
+Apr 14 MACD slope lookback Set to 2 bars; cross-validated
+on MSFT.
+Apr 14 Histogram confirma-
+tion
+Enabled to suppress hair-
+trigger exits.
+Apr 14 EMA12 confirmation Disabled to reduce false nega-
+tives.
+Apr 20 Recent trend align-
+ment gate
+Promoted
+require recent trend alignment=false
+(R-002, D-036); lifted activ-
+ity and returns on NVDA,
+MSFT, and AMD.
+Apr 21 VWAP/RSI mean-
+reversion (research)
+Added
+vwap rsi mean reversion
+as a second strategy (D-
+038, R-004). NVDA
+sweep (R-005) identified
+max bars in trade=15as the
+cleanest first-pass tuning im-
+provement: NVDA +0.2751%
+/ PF 1.5873 / 127 trades.
+Apr 23 Paper2 dual-account
+live comparison
+Pinned
+vwap rsi mean reversion
+into a separate Al-
+paca paper account
+(vwap rsi paper) with
+min distance from vwap frac=0.003
+andmax bars in trade=15
+(R-006). The MACD pullback
+baseline keeps the original
+macd pullback paperac-
+count so that the same tickers
+can trade independently in
+both strategies.
+23
+
+--- PAGE 24 ---
+
+Table 4: Multi-asset backtest performance. PF = profit factor (gross profit / gross loss).
+Ret% is cumulative return; DD% is maximum drawdown. Sweep = published curated
+artifact undershared backtests/; Artifact = localbacktests/ summary.json.
+Symbol Period Trades Win% PF Ret% DD% Source
+ALB 1Y 2025–26 166 43.37 1.2990 +0.0915−0.0668 Artifact
+ALB 3Y 2023–26 303 43.89 1.2556 +0.5086−0.2966 Artifact
+NVDA 5Y 2021–26 933 46.09 1.1224 +0.9511−0.5970 Sweep
+MSFT 5Y 2021–26 211 47.39 1.2068 +0.2560−0.3072 Sweep
+AMD 3Y 2023–26 503 42.15 0.8705−0.5743−0.7042 Sweep
+Table 5: ALB backtest results for the EMA-Band MACD Pullback strategy. Both rows
+are drawn directly from the saved summary artifacts inbacktests/.
+Metric 1-Year 3-Year
+Number of Trades 166 303
+Winning Trades 72 133
+Losing Trades 94 170
+Win Rate (%) 43.37 43.89
+Long / Short 90 / 76 147 / 156
+Initial Capital$100,000$100,000
+Ending Capital$100,091.45$100,508.60
+Total Return (%) +0.0915 +0.5086
+Gross Profit$397.35$2,498.30
+Gross Loss$305.90$1,989.75
+Profit Factor 1.299 1.2556
+Max Drawdown (%)−0.0668−0.2966
+Avg Trade Return (%) +0.0928 +0.2198
+Best Trade (%) +4.6782 +5.9476
+Worst Trade (%)−3.1138−3.9684
+Table 6: Distribution of exit reasons on the ALB 1Y reference backtest (166 total exits;
+run2026-04-02 00-40-22).
+Exit Reason Count Percentage
+MACD Failure 88 53.0%
+Time Stop 29 17.5%
+Stop-Loss 28 16.9%
+Take-Profit 21 12.7%
+Total 166 100.1%
+24
+
+--- PAGE 25 ---
+
+Table 7: Plain baseline vs. pooled XGBoost filter on the Oct 2025 – Apr 21 2026 test
+window. All figures drawn frommodels/pooled macd pullback xgb report.json.
+Metric Baseline Pooled XGBoost
+Combined profit factor 1.1601 1.0828
+Avg per-symbol total return 0.0377% 0.0120%
+Weighted avg trade return 0.0535% 0.0301%
+Worst-symbol max drawdown−0.2375%−0.2207%
+Average per-symbol drawdown−0.0909%−0.0762%
+Table 8: One-year (Apr 2025–Apr 2026) backtest comparison between the MACD pull-
+back baseline and the new VWAP/RSI mean-reversion strategy on NVDA and MSFT,
+plus the tuned NVDA run that drives the Paper2 live configuration.
+Symbol Strategy / config Trades Win% PF Ret% DD%
+NVDAmacd pullback(defaults) 90 47.78 1.1119 +0.0637−0.2067
+NVDAvwap rsi(defaults) 127 51.18 1.4969 +0.2229−0.0832
+NVDAvwap rsi,max bars=15127 50.39 1.5873 +0.2751−0.0936
+MSFTmacd pullback(defaults) 22 50.00 1.3013 +0.0284−0.0689
+MSFTvwap rsi(defaults) 77 41.56 0.7469−0.0622−0.0885
+Table 9: Live paper-trading order events (April 16–21, 2026), as recorded in
+trade log.csv.
+Date Sym. Side Qty Fill Signal / Exit Reason
+Apr 16 ARKK BUY 51 77.430 macd pullback (long entry)
+Apr 16 ARKK SELL 51 76.977 macd failure (exit long)
+Apr 20 MSFT SELL 9 420.31 macd pullback (short entry)
+Apr 20 ARKK SELL 49 78.702 macd pullback (short entry)
+Apr 20 ARKK BUY 49 77.760 take profit (close short)
+Apr 20 ARKK SELL 49 78.638 macd pullback (short entry)
+Apr 20 MSFT BUY 9 419.26 time stop (close short)
+Apr 21 AMZN BUY 31 253.43 macd pullback (long entry)
+Apr 21 MSFT BUY 18 424.61 macd pullback (long entry)
+Apr 21 ARKK BUY 96 80.075 macd pullback (long entry)
+Apr 21 AMZN SELL 31 251.30 macd failure (exit long)
+Apr 21 ARKK SELL 100 78.150 macd pullback (short entry)
+Apr 21 MSFT SELL 18 423.23 macd failure (exit long)
+Apr 21 AMD BUY 27 279.96 macd pullback (long entry)
+Table 10: Team Better Buzzington project contributions.
+Member Primary Role
+Cooper Jumamil Strategy design, parameter optimisation, report writeup
+Ulyses Gonzalez Data pipeline, Alpaca data integration, XGBoost workflow
+Joshua Truong Core bot design, Alpaca order integration, paper-trading readiness
+Havannah Info dashboard, risk management, performance analysis
+25
+
+--- PAGE 26 ---
+
+Table 11: ARKK paper-trade round trip on April 16, 2026.
+Attribute Value
+Symbol ARKK
+Entry Time (UTC) 15:39:13
+Entry Price$77.43
+Quantity 51 shares
+Exit Time (UTC) 16:34:21
+Exit Price$76.977059
+Duration 55 min 8 s (11 bars)
+Exit Reasonmacd failure
+P&L−$23.08
+Return−0.585%
+Order Type Market (DAY)
+Fill Status Filled
+26

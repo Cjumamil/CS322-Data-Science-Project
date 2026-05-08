@@ -66,6 +66,8 @@ class VwapRsiMeanReversionStrategy(TradingStrategy):
     enable_extreme_trend_filter: bool
     trend_lookback_bars: int
     max_trend_move_frac_of_price: float
+    enable_sideways_regime_filter: bool
+    max_session_directional_efficiency: float | None
     name: str = "vwap_rsi_mean_reversion"
     version: str = "v1"
 
@@ -177,6 +179,8 @@ class VwapRsiMeanReversionStrategy(TradingStrategy):
             localized_index = localized_index.tz_localize("UTC")
         localized_index = localized_index.tz_convert(NEW_YORK_TIMEZONE)
         session_dates = pd.Index(localized_index.date)
+        session_date_series = pd.Series(session_dates, index=work.index)
+        new_session = session_date_series.ne(session_date_series.shift(1)).fillna(True)
 
         typical_price = (work["High"] + work["Low"] + work["Close"]) / 3
         volume = work["Volume"].fillna(0)
@@ -250,6 +254,24 @@ class VwapRsiMeanReversionStrategy(TradingStrategy):
             work["trend_filter_pass_short"] = True
         work["trend_filter_blocked_long"] = (~work["trend_filter_pass_long"]).fillna(False)
         work["trend_filter_blocked_short"] = (~work["trend_filter_pass_short"]).fillna(False)
+
+        work["session_open_price"] = work["Open"].groupby(session_dates).transform("first")
+        prior_close = work["Close"].shift(1)
+        baseline_close = prior_close.where(~new_session, work["session_open_price"])
+        work["session_close_step_abs"] = (work["Close"] - baseline_close).abs().fillna(0.0)
+        work["session_cumulative_abs_move"] = work["session_close_step_abs"].groupby(session_dates).cumsum()
+        work["session_net_move_from_open"] = (work["Close"] - work["session_open_price"]).abs()
+        work["session_directional_efficiency"] = (
+            work["session_net_move_from_open"]
+            / work["session_cumulative_abs_move"].where(work["session_cumulative_abs_move"] > 0)
+        ).fillna(0.0)
+        if self.enable_sideways_regime_filter and self.max_session_directional_efficiency is not None:
+            work["sideways_regime_filter_pass"] = (
+                work["session_directional_efficiency"] <= self.max_session_directional_efficiency
+            ).fillna(False)
+        else:
+            work["sideways_regime_filter_pass"] = True
+        work["sideways_regime_blocked"] = (~work["sideways_regime_filter_pass"]).fillna(False)
 
         minutes_of_day = (localized_index.hour * 60) + localized_index.minute
         start_minute = REGULAR_MARKET_OPEN_MINUTE + max(0, self.entry_start_minutes_after_open)
@@ -334,11 +356,13 @@ class VwapRsiMeanReversionStrategy(TradingStrategy):
             work["long_core_setup"]
             & work["stabilization_confirmation_long"]
             & work["trend_filter_pass_long"]
+            & work["sideways_regime_filter_pass"]
         )
         work["short_entry_setup"] = (
             work["short_core_setup"]
             & work["stabilization_confirmation_short"]
             & work["trend_filter_pass_short"]
+            & work["sideways_regime_filter_pass"]
         )
         work["long_entry_signal"] = work["long_entry_setup"] & work["long_entry_risk_plan_valid"]
         work["short_entry_signal"] = work["short_entry_setup"] & work["short_entry_risk_plan_valid"]
@@ -379,10 +403,12 @@ class VwapRsiMeanReversionStrategy(TradingStrategy):
             "VWAP",
             "RSI",
             "price_distance_from_vwap_frac",
+            "session_directional_efficiency",
             "long_setup",
             "short_setup",
             "stabilization_confirmation_long",
             "stabilization_confirmation_short",
+            "sideways_regime_filter_pass",
             "long_entry_signal",
             "short_entry_signal",
             "entry_action",
@@ -510,6 +536,8 @@ class VwapRsiMeanReversionStrategy(TradingStrategy):
             "enable_extreme_trend_filter": self.enable_extreme_trend_filter,
             "trend_lookback_bars": self.trend_lookback_bars,
             "max_trend_move_frac_of_price": self.max_trend_move_frac_of_price,
+            "enable_sideways_regime_filter": self.enable_sideways_regime_filter,
+            "max_session_directional_efficiency": self.max_session_directional_efficiency,
         }
 
     def build_strategy_signals(self, latest_row: pd.Series, position_context: PositionContext | None = None) -> dict:
@@ -546,6 +574,12 @@ class VwapRsiMeanReversionStrategy(TradingStrategy):
             "trend_filter_pass_short": _safe_bool(latest_row.get("trend_filter_pass_short")),
             "trend_filter_blocked_long": _safe_bool(latest_row.get("trend_filter_blocked_long")),
             "trend_filter_blocked_short": _safe_bool(latest_row.get("trend_filter_blocked_short")),
+            "session_open_price": _safe_float(latest_row.get("session_open_price")),
+            "session_cumulative_abs_move": _safe_float(latest_row.get("session_cumulative_abs_move")),
+            "session_net_move_from_open": _safe_float(latest_row.get("session_net_move_from_open")),
+            "session_directional_efficiency": _safe_float(latest_row.get("session_directional_efficiency")),
+            "sideways_regime_filter_pass": _safe_bool(latest_row.get("sideways_regime_filter_pass")),
+            "sideways_regime_blocked": _safe_bool(latest_row.get("sideways_regime_blocked")),
             "regular_session_bar": _safe_bool(latest_row.get("regular_session_bar")),
             "time_window_active": _safe_bool(latest_row.get("time_window_active")),
             "entries_allowed": _safe_bool(latest_row.get("entries_allowed")),

@@ -84,6 +84,9 @@ def build_strategy_context_payload(
     qty: int,
     entry_price,
     buying_power: float,
+    account_equity: Optional[float],
+    account_portfolio_value: Optional[float],
+    account_last_equity: Optional[float],
     account_status,
     latest_close: float,
     latest_signal_value: float,
@@ -124,6 +127,9 @@ def build_strategy_context_payload(
         "account": {
             "name": account_name,
             "buying_power": buying_power,
+            "equity": account_equity,
+            "portfolio_value": account_portfolio_value,
+            "last_equity": account_last_equity,
             "status": serialize_value(account_status),
         },
         "market_data": {

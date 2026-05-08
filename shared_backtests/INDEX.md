@@ -21,8 +21,10 @@ Use these first for dashboard design and schema decisions:
 
 - `shared_backtests/2026-04-21_01-41-30_NVDA_macd_pullback_2025-04-21_to_2026-04-21`
   Current `macd_pullback` one-year comparison run for `NVDA`.
+  This folder now also includes the published overview chart PNG for report Figure 2.
 - `shared_backtests/2026-04-21_01-45-07_NVDA_vwap_rsi_mean_reversion_2025-04-21_to_2026-04-21_max_bars_in_trade_15`
   Current published `vwap_rsi_mean_reversion` run that matches the promoted Paper2-style config from `R-006`.
+  This folder now also includes the published overview chart PNG for report Figure 3.
 
 These two runs are the easiest pair to use for a side-by-side strategy dashboard because they share the same symbol and one-year window.
 
@@ -50,6 +52,8 @@ These two runs are the easiest pair to use for a side-by-side strategy dashboard
   Best first-pass tuning artifact for `R-005`.
 - `2026-04-21_01-45-07_NVDA_vwap_rsi_mean_reversion_2025-04-21_to_2026-04-21_max_bars_in_trade_15`
   Best saved first-pass VWAP/RSI run and the cleanest current candidate for dashboard use.
+- `2026-04-02_00-40-22_ALB_macd_pullback_2025-03-31_2026-03-31`
+  Published ALB one-year reference run with chart, summary, and trades for Figure 1 plus the ALB tables.
 
 ## Suggested Report Story
 

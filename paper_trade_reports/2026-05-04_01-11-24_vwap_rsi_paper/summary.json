@@ -1,0 +1,129 @@
+﻿{
+    "report_kind":  "paper_trade_report",
+    "analysis_start":  "2026-04-23T14:06:02.750462+00:00",
+    "analysis_end":  "2026-05-01T19:07:29.542683+00:00",
+    "selected_filters":  {
+                             "account":  "vwap_rsi_paper",
+                             "strategy":  null,
+                             "symbol":  null,
+                             "start":  null,
+                             "end":  null,
+                             "chart_enabled":  false,
+                             "broker_history_enabled":  false
+                         },
+    "initial_equity":  200000.0,
+    "initial_equity_source":  "first_context_buying_power_estimate",
+    "ending_equity":  201408.5794,
+    "total_pnl":  1408.5794,
+    "total_return_pct":  0.7043,
+    "max_drawdown_pct":  -0.3523,
+    "trade_count":  50,
+    "win_count":  27,
+    "loss_count":  23,
+    "win_rate_pct":  54.0,
+    "long_trade_count":  17,
+    "short_trade_count":  33,
+    "gross_profit":  3119.8774,
+    "gross_loss":  1711.298,
+    "profit_factor":  1.8231,
+    "average_trade_pnl":  28.1716,
+    "average_trade_return_pct":  0.4395,
+    "best_trade_return_pct":  6.9053,
+    "worst_trade_return_pct":  -4.647,
+    "average_holding_minutes":  553.0705,
+    "exit_reason_counts":  {
+                               "stop_loss":  28,
+                               "time_stop":  13,
+                               "take_profit":  7,
+                               "flatten_before_close":  2
+                           },
+    "symbol_breakdown":  {
+                             "AAPL":  {
+                                          "trade_count":  2,
+                                          "win_rate_pct":  100.0,
+                                          "total_pnl":  88.92,
+                                          "average_trade_return_pct":  0.5605
+                                      },
+                             "AMD":  {
+                                         "trade_count":  10,
+                                         "win_rate_pct":  50.0,
+                                         "total_pnl":  -20.9987,
+                                         "average_trade_return_pct":  -0.0488
+                                     },
+                             "AMZN":  {
+                                          "trade_count":  8,
+                                          "win_rate_pct":  50.0,
+                                          "total_pnl":  78.2583,
+                                          "average_trade_return_pct":  0.2059
+                                      },
+                             "ARKK":  {
+                                          "trade_count":  8,
+                                          "win_rate_pct":  62.5,
+                                          "total_pnl":  307.4899,
+                                          "average_trade_return_pct":  0.2656
+                                      },
+                             "IWM":  {
+                                         "trade_count":  3,
+                                         "win_rate_pct":  66.6667,
+                                         "total_pnl":  65.415,
+                                         "average_trade_return_pct":  0.5938
+                                     },
+                             "META":  {
+                                          "trade_count":  4,
+                                          "win_rate_pct":  50.0,
+                                          "total_pnl":  -33.17,
+                                          "average_trade_return_pct":  -0.1086
+                                      },
+                             "MSFT":  {
+                                          "trade_count":  5,
+                                          "win_rate_pct":  40.0,
+                                          "total_pnl":  40.11,
+                                          "average_trade_return_pct":  0.3628
+                                      },
+                             "NVDA":  {
+                                          "trade_count":  9,
+                                          "win_rate_pct":  55.5556,
+                                          "total_pnl":  889.5448,
+                                          "average_trade_return_pct":  1.6231
+                                      },
+                             "SPY":  {
+                                         "trade_count":  1,
+                                         "win_rate_pct":  0.0,
+                                         "total_pnl":  -6.99,
+                                         "average_trade_return_pct":  -0.1978
+                                     }
+                         },
+    "account_breakdown":  {
+                              "vwap_rsi_paper":  {
+                                                     "trade_count":  50,
+                                                     "win_rate_pct":  54.0,
+                                                     "total_pnl":  1408.5794,
+                                                     "symbol_count":  9
+                                                 }
+                          },
+    "strategy_breakdown":  {
+                               "vwap_rsi_mean_reversion":  {
+                                                               "trade_count":  50,
+                                                               "win_rate_pct":  54.0,
+                                                               "total_pnl":  1408.5794
+                                                           }
+                           },
+    "reconstruction_stats":  {
+                                 "filled_order_count":  114,
+                                 "entry_order_count":  57,
+                                 "exit_order_count":  22,
+                                 "completed_trade_count":  50,
+                                 "orphan_exit_count":  7,
+                                 "dangling_entry_count":  0
+                             },
+    "source_logs":  {
+                        "trade_log_path":  "trade_log.csv",
+                        "notable_strategy_context_log_path":  "notable_strategy_context_log.jsonl"
+                    },
+    "generated_at":  "2026-05-04T08:11:24Z",
+    "trade_chart_count":  0,
+    "trade_chart_dir":  null,
+    "overview_chart_path":  null,
+    "trades_csv_path":  "2026-05-04_01-11-24_vwap_rsi_paper/trades.csv",
+    "summary_json_path":  "2026-05-04_01-11-24_vwap_rsi_paper/summary.json"
+}

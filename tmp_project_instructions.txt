@@ -1,0 +1,224 @@
+FILE: Project Instructions.pdf
+PAGES: 6
+
+--- PAGE 1 ---
+
+Data Science 322: Final Project
+Algorithmic Trading Bot with Alpaca
+Instructor: P.M.H
+Spring 2025
+Summary
+In this final project, student teams will design, implement, and backtest a day trading bot using the
+AlpacaAPI.However, beforeaccessingtheAlpacaenvironment, everyteammustdemonstrateproficiency
+in financial data manipulation using Yahoo Finance and Python. This project tests your data science
+skills, algorithmic thinking, and ability to work effectively as a team.
+Goals
+The goals of this assignment are:
+1. Demonstrate mastery of financial data retrieval and manipulation using Python (‘yfinance‘).
+2. Develop and implement a programmatic trading strategy.
+3. Interface with the Alpaca API for paper trading execution.
+4. Foster professional team dynamics through reporting and team-building activities.
+Phase 1: Instructor Check-off (Prerequisite)
+Before starting the Alpaca bot, your team must be **checked off** by the instructor. You must demon-
+strate that you can effectively pull, clean, and visualize financial data using Yahoo Finance.
+Getting Started with Yahoo Finance (‘yfinance‘)
+Yahoo Finance is a popular source for stock market data. The ‘yfinance‘ library offers a threaded and
+Pythonic way to download market data from Yahoo! Finance.
+Basic Usage Example
+Below is a simple script to get you started. It installs the library, fetches data for Apple (AAPL), and
+prints the first few rows.
+1# First , ensure you have the library i n s t a l l e d :
+2# pip install y fi nan ce
+3
+4import y fi na nce as yf
+5import pandas as pd
+6import m a t p l o t l i b . pyplot as plt
+1
+
+--- PAGE 2 ---
+
+7
+8# 1. Define the Ticker Symbol
+9t i c k e r _ s y m b o l = " AAPL "
+10
+11# 2. Get Data on this Ticker
+12t i c k e r _ d a t a = yf . Ticker ( t i c k e r _ s y m b o l )
+13
+14# 3. Get the H i s t o r i c a l Prices for this Ticker
+15# Period options : 1d , 5d , 1 mo , 3 mo , 6 mo , 1y , 2y , 5y , 10 y , ytd , max
+16t i c k e r _ d f = t i c k e r _ d a t a . history ( period = ’1 d ’ , start = ’ 2024 -01 -01 ’ , end = ’ 2025 -01 -01 ’)
+17
+18# The r e s u l t i n g D a t a F r a m e ’ t i c k e r _ d f ’ has columns :
+19# Open , High , Low , Close , Volume , Dividends , Stock Splits
+20
+21print ( " Head of Data : " )
+22print ( t i c k e r _ d f . head () )
+23
+24# 4. Simple V i s u a l i z a t i o n
+25t i c k e r _ d f [ ’ Close ’ ]. plot ( title = " AAPL Closing Price " )
+26plt . show ()
+Listing 1: Basic Yahoo Finance Data Retrieval
+Explanation of Concepts
+•Ticker Object:The ‘yf.Ticker("SYMBOL")‘ creates an object that allows you to access various
+data points (financials, earnings, history) for that specific company.
+•History:The ‘.history()‘ method is the workhorse of this library. It returns a Pandas DataFrame,
+which is the standard format for data science analysis.
+•Pandas Integration:Because the data is returned as a DataFrame, you can immediately use
+standard pandas methods (like ‘.rolling()‘, ‘.mean()‘, or slicing) to calculate technical indicators
+(e.g., Simple Moving Averages).
+Recommended Reading
+To prepare for the check-off and the final project, read the following resources:
+•Documentation:yfinance PyPI Official Documentation
+•T utorial:Stock Price Prediction Basics (GeeksforGeeks)
+•Concepts:Basics of Algorithmic Trading (Investopedia)
+Phase 2: Time Series Analysis Application
+Once you have the data, you must apply the Time Series techniques learned in class to generate trading
+signals. A raw price chart is insufficient for a trading bot; the bot needs mathematical indicators to
+make decisions.
+Mathematical Concepts
+Your bot should rely on statistical indicators. A common starting point is theMoving A verage
+Crossoverstrategy, which utilizes time-series smoothing.
+2
+
+--- PAGE 3 ---
+
+Simple Moving A verage (SMA)
+The Simple Moving Average treats the price series as a sliding window. For a window of sizekat time
+t, the SMA is defined as:
+SM A(k)
+t = 1
+k
+k−1X
+i=0
+Pt−i
+WhereP t is the closing price at timet.
+Exponential Moving A verage (EMA)
+The EMA places greater weight on recent data points, making it more responsive to new information
+(conceptually similar to AR models). The recursive formula is:
+EM At =α·P t + (1−α)·EM A t−1
+Whereαis the smoothing factor, typically calculated asα= 2
+k+1.
+Implementation Example
+Below is an example of how to calculate these metrics and generate a "Signal" for your bot.
+1# C a l c u l a t e the 20 - day ( Fast ) and 50 - day ( Slow ) Moving A ver ag es
+2t i c k e r _ d f [ ’ SMA_20 ’] = t i c k e r _ d f [ ’ Close ’ ]. rolling ( window =20) . mean ()
+3t i c k e r _ d f [ ’ SMA_50 ’] = t i c k e r _ d f [ ’ Close ’ ]. rolling ( window =50) . mean ()
+4
+5# Define the St ra te gy :
+6# Signal = 1 ( Buy ) if SMA_20 > SMA_50
+7# Signal = 0 ( Hold / Sell ) if SMA_20 < SMA_50
+8t i c k e r _ d f [ ’ Signal ’] = 0
+9t i c k e r _ d f . loc [ t i c k e r _ d f [ ’ SMA_20 ’] > t i c k e r _ d f [ ’ SMA_50 ’] , ’ Signal ’] = 1
+10
+11# C a l c u l a t e Daily Returns of the stock
+12t i c k e r _ d f [ ’ D a i l y _ R e t u r n ’] = t i c k e r _ d f [ ’ Close ’ ]. p c t _ c h a n g e ()
+13
+14# C a l c u l a t e St rat eg y Returns ( Shift signals by 1 to avoid look - ahead bias )
+15t i c k e r _ d f [ ’ S t r a t e g y _ R e t u r n ’] = t i c k e r _ d f [ ’ Signal ’ ]. shift (1) * t i c k e r _ d f [ ’ D a i l y _ R e t u r n ’]
+16
+17# Plot the s tr at eg y p e r f o r m a n c e
+18( t i c k e r _ d f [ ’ S t r a t e g y _ R e t u r n ’] + 1) . cumprod () . plot ( title = " C u m u l a t i v e St rat eg y Returns " )
+Listing 2: Generating Signals with Time Series Analysis
+Advanced Option:Students aiming for an ’A’ are encouraged to explore more advanced Time Series
+models such as **ARIMA** (AutoRegressive Integrated Moving Average) or **GARCH** (volatility
+modeling) to predict future price movements rather than just following trends.
+Phase 3: The Day Trading Bot (Alpaca)
+Once checked off, you will proceed to the main project. You will use the **Alpaca Paper Trading API**
+to implement your strategy.
+•You must not use real money. Use the Alpaca "Paper Trading" environment.
+•Your bot should be capable of making buy/sell decisions based on live or historical data analysis.
+3
+
+--- PAGE 4 ---
+
+•Further technical details on Alpaca keys and API endpoints will be provided after the Phase 1
+check-off.
+Team Reports and Team-Building Activities
+Note:This component is designed to simulate a real-world data science team environment while keeping
+the experience engaging and enjoyable.
+Weekly Team Reports
+Each week, the instructor will briefly meet with the designated team lead to discuss the team’s progress,
+division of responsibilities, and overall team dynamics. These informal check-ins focus on project status,
+collaboration, and any challenges the team may be facing.
+Governance and Personnel Management (The "Real World" Simulation)
+To mimic professional workplace accountability, teams will follow these rules every two weeks:
+•Leadership Rotation:Every two weeks, the team must hold a vote to either retain the current
+team lead or elect a new one.
+•T ermination Policy:If a team member is not contributing or fails to assist the team, the team
+may vote to "fire" that individual.
+•The Job Market:A fired student must use their resume to "interview" with other existing teams
+to find a new position.
+•Startup T eams:If two or more students are teamless, they may form a new "startup" team.
+•Solo Mandate:If no team is willing to hire a student due to poor work ethics or lack of perfor-
+mance, that student is required to complete the remainder of the Final Project solo.
+Team-Building Activities
+Teams will periodically participate in team-building activities led by the team lead with the goal of
+boosting team morale and strengthening collaboration.
+•Activities:Activities may include (but are not limited to) group dinners, game nights, social
+outings, hikes, or similar events.
+•Documentation:Teams will document participation by submitting a photo of the group together.
+•Purpose:Creativityandenthusiasmareencouraged; thisportionofthecourseismeanttopromote
+strong teamwork, communication, and a positive working environment.
+Final Project Report
+Overview:This report should follow the basic structure of a scientific or technical paper. You are
+*required*to useOverleaf/LaTeXfor writing your paper.
+The basic parts of the final paper are as follows:
+1.Title and Author Information
+4
+
+--- PAGE 5 ---
+
+2.Abstract:A brief summary of your trading strategy and results.
+3.Introduction:Motivation for the chosen strategy.
+4.Methodology & Code Explanation:
+•Explanation of the ‘yfinance‘ data analysis.
+•Explanation of the Alpaca integration.
+•Logic behind the trading algorithm.
+5.Results:
+•Performance metrics (ROI, Sharpe Ratio, etc.).
+•Backtesting results vs. Paper Trading results.
+6.Discussion:
+•*Note:*If you encountered issues (API limits, latency, bugs), describe how you addressed
+them.
+•Reflect on the debugging process.
+•Risk Analysis:Discuss the limitations of your bot and potential risks if used with real
+capital.
+7.Conclusion
+8.References
+9.Appendices:
+•*Note:*Include the full source code in the appendices.
+•T eam Photos:Include the photos from your Team-Building Activities here.
+Academic Integrity Policy
+•Cheating is strictly prohibited.Copying directly from AI-generated content or any other
+published work without significant editing or proper citation will not be tolerated.
+•Any instance of plagiarism or academic dishonesty will result in a score of zero for the assignment,
+and a report will be made to the school administration.
+•Students are expected to submit their own original work.
+5
+
+--- PAGE 6 ---
+
+Grading Rubric
+Component Expectations W eight
+Code Quality Functional Python code for Yahoo Finance and
+Alpaca. Proper error handling, modular design,
+and comments.Attach code to Appendix.
+30%
+Results Comprehensive evaluation of the bot’s perfor-
+mance using ROI, Sharpe Ratio, or backtesting
+metrics. Evidence of critical thinking in analyzing
+why the strategy succeeded or failed.
+30%
+Results & Dis-
+cussion
+Analysis of the trading strategy performance.
+Critical reflection on limitations and risks.
+20%
+W riting Style Well-organized, clear writing with proper gram-
+mar. Adherence to Overleaf format.
+20%
+Uploadto Canvas the following:
+•PDF report:TeamName_FinalProject_DS322.pdf
+•LaT eX code:TeamName_FinalProject_DS322.tex
+•Code:TeamName_SourceCode.zip
+6

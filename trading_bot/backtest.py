@@ -871,6 +871,12 @@ def build_backtest_summary(
             "trend_filter_blocked_short_count": int(
                 analysis_df.get("trend_filter_blocked_short", pd.Series(dtype=bool)).sum()
             ),
+            "sideways_regime_pass_bar_count": int(
+                analysis_df.get("sideways_regime_filter_pass", pd.Series(dtype=bool)).sum()
+            ),
+            "sideways_regime_blocked_count": int(
+                analysis_df.get("sideways_regime_blocked", pd.Series(dtype=bool)).sum()
+            ),
             "long_entry_signal_count": int(
                 analysis_df.get("long_entry_signal", pd.Series(dtype=bool)).sum()
             ),
@@ -1434,16 +1440,15 @@ def plot_backtest_chart(
     return output_path
 
 
-def build_output_paths(output_dir: str, slug: str, run_timestamp: str) -> tuple[Path, Path, Path, Path]:
+def build_output_paths(output_dir: str, folder_name: str) -> tuple[Path, Path, Path, Path]:
     """Return the standard output paths for one backtest run."""
-    root = Path(output_dir) / f"{run_timestamp}_{slug}"
+    root = Path(output_dir) / folder_name
     root.mkdir(parents=True, exist_ok=True)
-    filename_prefix = f"{run_timestamp}_{slug}"
     return (
         root,
-        root / f"{filename_prefix}_trades.csv",
-        root / f"{filename_prefix}_summary.json",
-        root / f"{filename_prefix}_chart.png",
+        root / "trades.csv",
+        root / "summary.json",
+        root / "chart.png",
     )
 
 
@@ -1577,10 +1582,14 @@ def save_backtest_run(
     if slug_suffix:
         slug = f"{slug}_{slug_suffix}"
     resolved_run_timestamp = run_timestamp or make_run_timestamp()
+    folder_name = (
+        f"{resolved_run_timestamp}_{slug}"
+        if slug_suffix is None
+        else slug_suffix
+    )
     run_root, trades_csv_path, summary_json_path, chart_path = build_output_paths(
         resolved_output_dir,
-        slug,
-        resolved_run_timestamp,
+        folder_name,
     )
 
     trades_df.to_csv(trades_csv_path, index=False)
@@ -1751,8 +1760,8 @@ def run_backtest_sweep(
         comparison_rows.append(build_sweep_comparison_row(variant, artifacts))
 
     comparison_df = pd.DataFrame(comparison_rows)
-    comparison_csv_path = sweep_root / f"{run_timestamp}_sweep_comparison.csv"
-    comparison_json_path = sweep_root / f"{run_timestamp}_sweep_summary.json"
+    comparison_csv_path = sweep_root / "sweep_comparison.csv"
+    comparison_json_path = sweep_root / "sweep_summary.json"
     comparison_df.to_csv(comparison_csv_path, index=False)
     comparison_json_path.write_text(
         json.dumps(

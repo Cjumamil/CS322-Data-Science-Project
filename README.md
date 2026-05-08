@@ -41,6 +41,8 @@ The system is designed to simulate real-world trading behavior, including:
 trading_bot/
 |-- main.py               # Main execution loop across configured accounts and symbols
 |-- backtest.py           # Offline historical backtest CLI
+|-- live_trade_report.py  # Report builder for executed paper trades
+|-- broker_history.py     # Broker-history stop-fill reconciliation helpers
 |-- config.py             # TOML config loading
 |-- data.py               # Market data retrieval (Alpaca)
 |-- broker.py             # Order execution and account handling
@@ -239,6 +241,31 @@ Example run folder name:
 * `shared_backtests/2026-04-02_00-40-22_ALB_macd_pullback_2025-03-31_to_2026-03-31/`
 * `backtests/2026-04-06_22-10-00_NVDA_macd_pullback_2025-03-31_to_2026-03-31_sweep_ema_band_window/`
 
+#### 7. Run a paper-trade report
+
+Use the separate report entry point to analyze completed paper trades from `trade_log.csv` in a backtest-style format:
+
+```bash
+python -m trading_bot.live_trade_report --account vwap_rsi_paper --strategy vwap_rsi_mean_reversion
+```
+
+This saves a timestamped run under `paper_trade_reports/` with:
+
+* reconstructed completed trades as CSV
+* a summary JSON
+* an overview equity chart when charting is enabled
+* optional per-trade zoom charts
+
+The report now uses account equity semantics for its baseline, not buying power. For future runs, the bot persists `equity`, `portfolio_value`, and `last_equity` into the strategy-context log so the report can resolve the baseline locally when those fields are available.
+
+By default, the report may still call Alpaca to fetch broker-history stop-fill supplements for any missing broker-side exits that were not persisted locally yet. If the local `trade_log.csv` already contains the reconciled stop fills, you can force a local-only report run with:
+
+```bash
+python -m trading_bot.live_trade_report --account vwap_rsi_paper --strategy vwap_rsi_mean_reversion --skip-broker-history
+```
+
+That flag disables the report-time Alpaca broker-history lookup. It does not change the local trade reconstruction rules.
+
 ---
 
 ### Notes
@@ -269,6 +296,7 @@ Other persisted local files include:
 
 * `blocker_incident_state.json` - small gitignored runtime state file used to remember which incidents are currently open so lifecycle events can be deduplicated cleanly across cycles and restarts
 * `live_session_state.json` - persisted lightweight live trade context used to make restarts safer
+* `paper_trade_reports/<timestamped-run-folder>/` - reconstructed paper-trade reports built from the local trade log plus optional broker-history supplements
 * `backtests/<timestamped-run-folder>/` - local offline backtest trade logs, summaries, and charts for one run
 * `shared_backtests/<timestamped-run-folder>/` - team-shared offline backtest runs intended for Git commits
 

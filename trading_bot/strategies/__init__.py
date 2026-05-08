@@ -133,6 +133,8 @@ DEFAULT_STRATEGY_CONFIGS = {
         "enable_extreme_trend_filter": True,
         "trend_lookback_bars": 6,
         "max_trend_move_frac_of_price": 0.02,
+        "enable_sideways_regime_filter": False,
+        "max_session_directional_efficiency": 0.35,
     },
 }
 
@@ -312,6 +314,12 @@ def create_strategy(strategy_config: dict):
             enable_extreme_trend_filter=bool(strategy_config.get("enable_extreme_trend_filter", True)),
             trend_lookback_bars=int(strategy_config.get("trend_lookback_bars", 6)),
             max_trend_move_frac_of_price=float(strategy_config.get("max_trend_move_frac_of_price", 0.02)),
+            enable_sideways_regime_filter=bool(strategy_config.get("enable_sideways_regime_filter", False)),
+            max_session_directional_efficiency=(
+                None
+                if strategy_config.get("max_session_directional_efficiency") in {None, ""}
+                else float(strategy_config.get("max_session_directional_efficiency", 0.35))
+            ),
             version=str(strategy_config.get("version", "v1")),
         )
 

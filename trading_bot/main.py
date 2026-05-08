@@ -14,6 +14,7 @@ from trading_bot.broker import (
     get_working_orders,
     market_is_open,
 )
+from trading_bot.broker_history import sync_account_trade_log_with_broker
 from trading_bot.config import AccountAssignment, BotConfig, SymbolAssignment, load_config
 from trading_bot.data import download_data
 from trading_bot.decision_logging import (
@@ -136,6 +137,16 @@ def print_cycle_summary(results: list[dict]) -> None:
 def current_portfolio_exposure_value(trading_client) -> float:
     """Return the absolute market value currently deployed across open positions."""
     return sum(get_position_market_value(position) for position in get_all_positions(trading_client))
+
+
+def optional_float(value) -> float | None:
+    """Convert one optional SDK numeric field into a plain float."""
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def projected_portfolio_exposure_fraction(
@@ -383,6 +394,9 @@ def run_symbol_cycle(
         return finish("ERROR", "account_lookup_failed")
 
     buying_power = float(account.buying_power)
+    account_equity = optional_float(getattr(account, "equity", None))
+    account_portfolio_value = optional_float(getattr(account, "portfolio_value", None))
+    account_last_equity = optional_float(getattr(account, "last_equity", None))
     incident_context["buying_power"] = buying_power
     exposure_metadata = {
         "asset_flags": {
@@ -506,6 +520,9 @@ def run_symbol_cycle(
             qty=qty,
             entry_price=entry_price,
             buying_power=buying_power,
+            account_equity=account_equity,
+            account_portfolio_value=account_portfolio_value,
+            account_last_equity=account_last_equity,
             account_status=account.status,
             latest_close=latest_close,
             latest_signal_value=latest_signal_value,
@@ -884,6 +901,18 @@ def run_cycle(session_state: dict, account_clients: list[tuple[AccountAssignment
     """Run one full bot cycle for every configured account and symbol."""
     results = []
     for account_config, trading_client in account_clients:
+        try:
+            sync_stats = sync_account_trade_log_with_broker(
+                trading_client=trading_client,
+                account_config=account_config,
+            )
+            if sync_stats["appended_order_count"] > 0:
+                print(
+                    f"Broker reconciliation: {account_config.name} appended "
+                    f"{sync_stats['appended_order_count']} missing stop-fill row(s) to trade_log.csv."
+                )
+        except Exception as exc:
+            print(f"Broker reconciliation failed for {account_config.name}: {exc}")
         for symbol_config in account_config.symbols:
             try:
                 results.append(run_symbol_cycle(session_state, trading_client, config, account_config, symbol_config))
@@ -947,6 +976,18 @@ def run() -> None:
             print(f"Skipping account {account_config.name}: {exc}")
             continue
         account_clients.append((account_config, trading_client))
+        try:
+            sync_stats = sync_account_trade_log_with_broker(
+                trading_client=trading_client,
+                account_config=account_config,
+            )
+            if sync_stats["appended_order_count"] > 0:
+                print(
+                    f"Startup broker reconciliation: {account_config.name} appended "
+                    f"{sync_stats['appended_order_count']} missing stop-fill row(s) to trade_log.csv."
+                )
+        except Exception as exc:
+            print(f"Startup broker reconciliation failed for {account_config.name}: {exc}")
         print_preflight_report(trading_client, account_config, session_state)
 
     if not account_clients:

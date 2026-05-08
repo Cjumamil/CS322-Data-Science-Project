@@ -1,0 +1,124 @@
+﻿{
+    "report_kind":  "paper_trade_report",
+    "analysis_start":  "2026-04-16T15:39:11.593118+00:00",
+    "analysis_end":  "2026-05-05T16:30:21.901154+00:00",
+    "selected_filters":  {
+                             "account":  "macd_pullback_paper",
+                             "strategy":  "macd_pullback",
+                             "symbol":  null,
+                             "start":  null,
+                             "end":  null,
+                             "chart_enabled":  true,
+                             "broker_history_enabled":  true
+                         },
+    "initial_equity":  100639.72,
+    "initial_equity_source":  "first_context_equity_estimate",
+    "ending_equity":  101286.5401,
+    "total_pnl":  646.8201,
+    "total_return_pct":  0.6427,
+    "max_drawdown_pct":  -0.2156,
+    "trade_count":  38,
+    "win_count":  21,
+    "loss_count":  17,
+    "win_rate_pct":  55.2632,
+    "long_trade_count":  17,
+    "short_trade_count":  21,
+    "gross_profit":  1370.68,
+    "gross_loss":  723.8599,
+    "profit_factor":  1.8936,
+    "average_trade_pnl":  17.0216,
+    "average_trade_return_pct":  0.2265,
+    "best_trade_return_pct":  3.897,
+    "worst_trade_return_pct":  -1.3923,
+    "average_holding_minutes":  159.766,
+    "exit_reason_counts":  {
+                               "macd_failure":  11,
+                               "time_stop":  11,
+                               "take_profit":  8,
+                               "stop_loss":  6,
+                               "flatten_before_close":  2
+                           },
+    "symbol_breakdown":  {
+                             "AAPL":  {
+                                          "trade_count":  3,
+                                          "win_rate_pct":  66.6667,
+                                          "total_pnl":  32.32,
+                                          "average_trade_return_pct":  0.1487
+                                      },
+                             "AMD":  {
+                                         "trade_count":  8,
+                                         "win_rate_pct":  87.5,
+                                         "total_pnl":  782.43,
+                                         "average_trade_return_pct":  1.2796
+                                     },
+                             "AMZN":  {
+                                          "trade_count":  5,
+                                          "win_rate_pct":  40.0,
+                                          "total_pnl":  -115.05,
+                                          "average_trade_return_pct":  -0.294
+                                      },
+                             "ARKK":  {
+                                          "trade_count":  7,
+                                          "win_rate_pct":  28.5714,
+                                          "total_pnl":  -199.0499,
+                                          "average_trade_return_pct":  -0.3581
+                                      },
+                             "META":  {
+                                          "trade_count":  3,
+                                          "win_rate_pct":  33.3333,
+                                          "total_pnl":  -0.69,
+                                          "average_trade_return_pct":  -0.0421
+                                      },
+                             "MSFT":  {
+                                          "trade_count":  7,
+                                          "win_rate_pct":  57.1429,
+                                          "total_pnl":  27.48,
+                                          "average_trade_return_pct":  0.0699
+                                      },
+                             "NVDA":  {
+                                          "trade_count":  4,
+                                          "win_rate_pct":  75.0,
+                                          "total_pnl":  120.7199,
+                                          "average_trade_return_pct":  0.3889
+                                      },
+                             "QQQ":  {
+                                         "trade_count":  1,
+                                         "win_rate_pct":  0.0,
+                                         "total_pnl":  -1.34,
+                                         "average_trade_return_pct":  -0.0187
+                                     }
+                         },
+    "account_breakdown":  {
+                              "macd_pullback_paper":  {
+                                                          "trade_count":  38,
+                                                          "win_rate_pct":  55.2632,
+                                                          "total_pnl":  646.8201,
+                                                          "symbol_count":  8
+                                                      }
+                          },
+    "strategy_breakdown":  {
+                               "macd_pullback":  {
+                                                     "trade_count":  38,
+                                                     "win_rate_pct":  55.2632,
+                                                     "total_pnl":  646.8201
+                                                 }
+                           },
+    "reconstruction_stats":  {
+                                 "filled_order_count":  76,
+                                 "entry_order_count":  38,
+                                 "exit_order_count":  38,
+                                 "completed_trade_count":  38,
+                                 "orphan_exit_count":  0,
+                                 "dangling_entry_count":  0
+                             },
+    "source_logs":  {
+                        "trade_log_path":  "trade_log.csv",
+                        "notable_strategy_context_log_path":  "notable_strategy_context_log.jsonl"
+                    },
+    "generated_at":  "2026-05-05T18:13:58Z",
+    "trade_chart_count":  38,
+    "trade_chart_dir":  "2026-05-05_11-13-58_macd_pullback_paper/trade_charts",
+    "overview_chart_path":  "2026-05-05_11-13-58_macd_pullback_paper/overview_chart.png",
+    "trades_csv_path":  "2026-05-05_11-13-58_macd_pullback_paper/trades.csv",
+    "summary_json_path":  "2026-05-05_11-13-58_macd_pullback_paper/summary.json"
+}

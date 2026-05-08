@@ -203,6 +203,8 @@ ticker = "NVDA"
 name = "vwap_rsi_mean_reversion"
 min_distance_from_vwap_frac = 0.003
 max_bars_in_trade = 15
+enable_sideways_regime_filter = true
+max_session_directional_efficiency = 0.55
 
 # Legacy ALB experiment kept for reference:
 # [[accounts.symbols]]
